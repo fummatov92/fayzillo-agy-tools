@@ -91,6 +91,9 @@ def build_parser():
     code_ep = code_sub.add_parser("endpoints", help="Extract API routes / endpoints")
     code_ep.add_argument("path", nargs="?", default=".", help="Project path")
 
+    code_sym = code_sub.add_parser("symbols", help="Extract class and function signatures from file or directory")
+    code_sym.add_argument("path", nargs="?", default=".", help="Target file or directory path")
+
     # === SECURE MODULE ===
     sec_p = subparsers.add_parser("secure", help="Security sanitization and secret masking")
     sec_sub = sec_p.add_subparsers(dest="action")
@@ -264,8 +267,10 @@ def main():
         elif args.module == "code":
             if args.action == "blueprint":
                 code_tool.run_code_blueprint(args)
-            elif args.action == "endpoints" or not args.action:
+            elif args.action == "endpoints":
                 code_tool.run_code_endpoints(args)
+            elif args.action == "symbols":
+                code_tool.run_code_symbols(args)
             else:
                 emit_result(None, success=False, error=f"Noma'lum code buyrug'i: {args.action}")
                 exit_code = 1

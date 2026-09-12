@@ -487,6 +487,78 @@ Agar loyiha jildida `node_modules` o'rnatilmagan bo'lsa (yoki `tsc` global o'rna
 
 *Hisobot muallifi: Lead Teamwork Worker | Sessiya: `a3061121-b8c5-45fb-9f27-f3f0c81ed890`*
 
+---
+
+## BUG-006 — `code symbols` : `symbols` buyrug'i CLI parserida ro'yxatdan o'tmagani va funksiyalar signaturalari ajratgichi yetishmasligi
+
+**Holat:** 🟢 Fixed  
+**Muhimlik:** Medium  
+**Modul:** `agy_tools/modules/code_tool.py`, `bin/agy-tool`  
+**Aniqlagan:** Core AI Engine (AGY sessiya: `a8b64ff4-d90b-4ac1-9c7c-129824ce21b6`)  
+**Aniqlash sanasi:** 2026-09-12  
+**Tuzatilgan sana:** 2026-09-12  
+**Mas'ul Agent:** Core AI Engine (`a8b64ff4-d90b-4ac1-9c7c-129824ce21b6`)  
+
+---
+
+### 📋 Tavsif
+
+`agy-tool --describe` chiqishida va hujjatlarda `code symbols` buyrug'i e'lon qilingan bo'lsa-da, `bin/agy-tool` subparsers ro'yxatida `symbols` qo'shilmagan edi. Natijada `agy-tool code symbols <path>` chaqirilganda `argument action: invalid choice: 'symbols'` xatoligi yuz bergan. Shuningdek `code_tool.py` da barcha dasturlash tillari (TS/JS, Python, Go, PHP) uchun AST/Regex signaturalarni ajratish funksiyasi to'liq ulanmagan edi.
+
+---
+
+### 🔬 Ildiz Sabab
+
+1. `bin/agy-tool` da `code_p` subparseriga faqat `blueprint` va `endpoints` qo'shilgan, `symbols` subparseri qolib ketgan edi.
+2. `code_tool.py` da `extract_symbols_from_file()`, `extract_symbols()` va `run_code_symbols()` funksiyalari mavjud emas edi.
+
+---
+
+### 🧪 Reproduksiya
+
+**Oldingi Xato Natija:**
+```
+usage: agy-tool code [-h] {blueprint,endpoints} ...
+agy-tool code: error: argument action: invalid choice: 'symbols' (choose from 'blueprint', 'endpoints')
+```
+
+**Yangi To'g'ri Natija:**
+```json
+{
+  "target_path": "/path/to/module",
+  "scanned_files_count": 7,
+  "total_symbols_count": 18,
+  "kinds_breakdown": { "type": 3, "class": 7, "method": 8 },
+  "symbols": [
+    { "name": "CompanyService", "kind": "class", "line": 31, "file": "company.service.ts", "signature": "export class CompanyService" },
+    { "name": "create", "kind": "method", "line": 34, "file": "company.service.ts", "signature": "async create(dto: CreateCompanyDto)" }
+  ]
+}
+```
+
+---
+
+### ✅ Amalga Oshirilgan Tuzatish
+
+1. `code_tool.py` ga ko'p tilli (TypeScript, JavaScript, Python, Go, PHP) AST/Regex asosidagi `extract_symbols_from_file()`, `extract_symbols()` va `run_code_symbols()` funksiyalari kiritildi.
+2. `bin/agy-tool` ga `code symbols` subparseri va handleri ulandi.
+3. `tests/test_audit_logger.py` ga `test_code_symbols_bug_006` regressiya testi kiritildi va to'liq testlardan 100% muvaffaqiyatli o'tdi.
+4. `install.sh` orqali yangilandi va jonli deploy qilindi.
+
+---
+
+### 📌 Tegishli Fayllar
+
+- [`agy_tools/modules/code_tool.py`](../agy_tools/modules/code_tool.py) — `extract_symbols()` va `run_code_symbols()` qo'shildi
+- [`bin/agy-tool`](../bin/agy-tool) — `symbols` subparser va marshruti ulandi
+- [`tests/test_audit_logger.py`](../tests/test_audit_logger.py) — `test_code_symbols_bug_006` qo'shildi
+- [`bugs.md`](./bugs.md) — BUG-006 yopildi (Fixed)
+
+---
+
+*Hisobot muallifi: Core AI Engine | Sessiya: `a8b64ff4-d90b-4ac1-9c7c-129824ce21b6`*
+
+
 
 
 

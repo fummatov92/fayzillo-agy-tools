@@ -357,3 +357,152 @@ def run_code_blueprint(args):
         "core_components_count": len(key_files),
         "key_components": key_files[:50]
     })
+
+def extract_symbols_from_file(filepath: str, base_path: str = "") -> list:
+    """Extract class, function, struct, interface and method symbols from a single source file."""
+    relpath = os.path.relpath(filepath, base_path) if base_path else os.path.basename(filepath)
+    ext = os.path.splitext(filepath)[1].lower()
+    symbols = []
+
+    try:
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+    except Exception:
+        return []
+
+    # Regex patterns by language
+    if ext in [".ts", ".js", ".tsx", ".jsx", ".mjs", ".cjs"]:
+        class_re = re.compile(r"^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([a-zA-Z0-9_$]+)(?:\s+extends\s+([a-zA-Z0-9_$.]+))?(?:\s+implements\s+([a-zA-Z0-9_$,\s]+))?")
+        iface_re = re.compile(r"^(?:export\s+)?interface\s+([a-zA-Z0-9_$]+)")
+        type_re = re.compile(r"^(?:export\s+)?type\s+([a-zA-Z0-9_$]+)\s*=")
+        func_re = re.compile(r"^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_$]+)\s*\(([^)]*)\)")
+        arrow_re = re.compile(r"^(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>")
+        method_re = re.compile(r"^\s*(?:(?:public|private|protected|static|readonly|override|async)\s+)*([a-zA-Z0-9_$]+)\s*\(([^)]*)\)\s*(?::\s*([^{;]+))?\s*\{")
+
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
+                continue
+
+            m = class_re.match(stripped)
+            if m:
+                symbols.append({"name": m.group(1), "kind": "class", "line": idx + 1, "file": relpath, "signature": stripped.split("{")[0].strip()})
+                continue
+            m = iface_re.match(stripped)
+            if m:
+                symbols.append({"name": m.group(1), "kind": "interface", "line": idx + 1, "file": relpath, "signature": stripped.split("{")[0].strip()})
+                continue
+            m = type_re.match(stripped)
+            if m:
+                symbols.append({"name": m.group(1), "kind": "type", "line": idx + 1, "file": relpath, "signature": stripped.rstrip(";")})
+                continue
+            m = func_re.match(stripped)
+            if m:
+                symbols.append({"name": m.group(1), "kind": "function", "line": idx + 1, "file": relpath, "signature": stripped.split("{")[0].strip()})
+                continue
+            m = arrow_re.match(stripped)
+            if m:
+                symbols.append({"name": m.group(1), "kind": "function", "line": idx + 1, "file": relpath, "signature": stripped.split("=>")[0].strip()})
+                continue
+            m = method_re.match(line)
+            if m:
+                name = m.group(1)
+                if name not in {"if", "for", "while", "switch", "catch", "return", "function", "constructor"}:
+                    symbols.append({"name": name, "kind": "method", "line": idx + 1, "file": relpath, "signature": stripped.split("{")[0].strip()})
+
+    elif ext in [".py"]:
+        class_py = re.compile(r"^class\s+([a-zA-Z0-9_]+)(?:\(([^)]*)\))?:")
+        def_py = re.compile(r"^\s*(?:async\s+)?def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?:")
+
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            m = class_py.match(line)
+            if m:
+                symbols.append({"name": m.group(1), "kind": "class", "line": idx + 1, "file": relpath, "signature": stripped.rstrip(":")})
+                continue
+            m = def_py.match(line)
+            if m:
+                name = m.group(1)
+                kind = "method" if line.startswith("    ") or line.startswith("\t") else "function"
+                symbols.append({"name": name, "kind": kind, "line": idx + 1, "file": relpath, "signature": stripped.rstrip(":")})
+
+    elif ext in [".go"]:
+        type_go = re.compile(r"^type\s+([a-zA-Z0-9_]+)\s+(struct|interface)")
+        func_go = re.compile(r"^func\s+(?:\(([^)]+)\)\s+)?([a-zA-Z0-9_]+)\s*\(([^)]*)\)")
+
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("//"):
+                continue
+            m = type_go.match(stripped)
+            if m:
+                symbols.append({"name": m.group(1), "kind": m.group(2), "line": idx + 1, "file": relpath, "signature": stripped.split("{")[0].strip()})
+                continue
+            m = func_go.match(stripped)
+            if m:
+                receiver, name = m.group(1), m.group(2)
+                kind = "method" if receiver else "function"
+                symbols.append({"name": name, "kind": kind, "line": idx + 1, "file": relpath, "signature": stripped.split("{")[0].strip()})
+
+    elif ext in [".php"]:
+        class_php = re.compile(r"^(?:abstract\s+|final\s+)?(class|interface|trait)\s+([a-zA-Z0-9_]+)")
+        func_php = re.compile(r"^\s*(?:(?:public|private|protected|static|final)\s+)*function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)")
+
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("//") or stripped.startswith("#"):
+                continue
+            m = class_php.match(stripped)
+            if m:
+                symbols.append({"name": m.group(2), "kind": m.group(1), "line": idx + 1, "file": relpath, "signature": stripped.split("{")[0].strip()})
+                continue
+            m = func_php.match(line)
+            if m:
+                symbols.append({"name": m.group(1), "kind": "method" if not line.startswith("function") else "function", "line": idx + 1, "file": relpath, "signature": stripped.split("{")[0].strip()})
+
+    return symbols
+
+def extract_symbols(target_path: str) -> dict:
+    """Extract symbols from a file or across an entire directory."""
+    target_path = os.path.abspath(target_path)
+    all_symbols = []
+    scanned_files = 0
+
+    if os.path.isfile(target_path):
+        scanned_files = 1
+        all_symbols.extend(extract_symbols_from_file(target_path, os.path.dirname(target_path)))
+    elif os.path.isdir(target_path):
+        for root, dirs, files in os.walk(target_path):
+            dirs[:] = [d for d in dirs if d not in ["node_modules", ".git", "dist", "build", ".next", "__pycache__", ".agents", ".angular", "vendor"]]
+            for file in files:
+                ext = os.path.splitext(file)[1].lower()
+                if ext in [".ts", ".js", ".tsx", ".jsx", ".py", ".go", ".php", ".rs"] and not file.endswith((".d.ts", ".min.js", ".bundle.js")):
+                    fpath = os.path.join(root, file)
+                    scanned_files += 1
+                    syms = extract_symbols_from_file(fpath, target_path)
+                    all_symbols.extend(syms)
+
+    by_kind = {}
+    for s in all_symbols:
+        k = s["kind"]
+        by_kind[k] = by_kind.get(k, 0) + 1
+
+    return {
+        "target_path": target_path,
+        "scanned_files_count": scanned_files,
+        "total_symbols_count": len(all_symbols),
+        "kinds_breakdown": by_kind,
+        "symbols": all_symbols
+    }
+
+def run_code_symbols(args):
+    """Run code symbols extraction."""
+    emit_progress("Scanning Symbols", 20, "Fayllar tahlili...")
+    target_path = safe_jail_path(args.path if hasattr(args, 'path') and args.path else ".")
+    emit_progress("Parsing Code", 60, "Class va funksiyalar signaturalari ajratilmoqda...")
+    result = extract_symbols(target_path)
+    emit_progress("Done", 100, f"{result['total_symbols_count']} ta symbol topildi.")
+    emit_result(result)
+

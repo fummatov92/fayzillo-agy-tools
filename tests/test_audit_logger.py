@@ -286,6 +286,80 @@ def test_debug_check_compiler_fallback():
         
     print("  ✓ Debug check compiler fallback & error reporting tests passed (BUG-005 fixed).")
 
+def test_code_symbols_bug_006():
+    print("[TEST] Testing code symbols AST/Regex extraction (BUG-006)...")
+    from agy_tools.modules.code_tool import extract_symbols_from_file, extract_symbols
+    test_temp_dir = os.path.join(parent_dir, "tests_temp_symbols")
+    os.makedirs(test_temp_dir, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=test_temp_dir) as tmpdir:
+        # 1. Create a TypeScript file
+        ts_file = os.path.join(tmpdir, "user.service.ts")
+        with open(ts_file, "w", encoding="utf-8") as f:
+            f.write("""
+export interface UserPayload {
+    id: string;
+    email: string;
+}
+
+export type AuthState = 'LOGGED_IN' | 'LOGGED_OUT';
+
+export class UserService {
+    async findUser(id: string): Promise<UserPayload> {
+        return { id, email: 'test@example.com' };
+    }
+
+    deleteUser(id: string) {
+        return true;
+    }
+}
+
+export const helperFn = (x: number) => x * 2;
+""")
+
+        # 2. Create a Python file
+        py_file = os.path.join(tmpdir, "calculator.py")
+        with open(py_file, "w", encoding="utf-8") as f:
+            f.write("""
+class Calculator:
+    def add(self, a, b):
+        return a + b
+
+def standalone_func(val):
+    return val
+""")
+
+        # Test single TS file extraction
+        ts_symbols = extract_symbols_from_file(ts_file)
+        names = [s["name"] for s in ts_symbols]
+        assert "UserPayload" in names
+        assert "AuthState" in names
+        assert "UserService" in names
+        assert "findUser" in names
+        assert "deleteUser" in names
+        assert "helperFn" in names
+
+        # Test directory extraction
+        dir_res = extract_symbols(tmpdir)
+        assert dir_res["scanned_files_count"] == 2
+        assert dir_res["total_symbols_count"] >= 8
+        assert "class" in dir_res["kinds_breakdown"]
+        assert "function" in dir_res["kinds_breakdown"]
+
+        # Test CLI invocation
+        cli_res = subprocess.run([
+            sys.executable,
+            os.path.join(parent_dir, "bin", "agy-tool"),
+            "code",
+            "symbols",
+            tmpdir
+        ], capture_output=True, text=True)
+        assert cli_res.returncode == 0
+        parsed = json.loads(cli_res.stdout.strip().split("\n")[-1])
+        assert parsed["success"] is True
+        assert parsed["data"]["total_symbols_count"] >= 8
+
+    print("  ✓ Code symbols extraction tests passed (BUG-006 fixed).")
+
 def main():
     test_sanitization()
     test_permissions_and_rotation()
@@ -294,9 +368,11 @@ def main():
     test_hooks()
     test_scan_nestjs_endpoints_multiline()
     test_debug_check_compiler_fallback()
+    test_code_symbols_bug_006()
     print("🎉 ALL TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     main()
+
 
 

@@ -74,3 +74,26 @@ def safe_jail_path(path: str, base_dir: str = None) -> str:
         raise PermissionError(f"Xavfsizlik cheklovi: '{path}' ruxsat etilgan jildlardan tashqarida!")
     return abs_path
 
+ALLOWED_PORT_RANGE = (15800, 15900)
+FORBIDDEN_SYSTEM_PORTS = {80, 443, 3000, 3306, 4000, 5432, 5433, 6379, 8080, 8090, 9000, 27017}
+
+def validate_safe_port(port: int, allow_range: tuple = ALLOWED_PORT_RANGE) -> bool:
+    """Validates that a port is strictly within the allowed JarvisOS range (15800-15900)."""
+    if port in FORBIDDEN_SYSTEM_PORTS or not (allow_range[0] <= port <= allow_range[1]):
+        raise PermissionError(
+            f"Xavfsizlik cheklovi: Port {port} taqiqlangan! "
+            f"Sandbox va Dev muhit portlari FAQAT {allow_range[0]}-{allow_range[1]} oralig'ida bo'lishi shart."
+        )
+    return True
+
+def extract_port_from_url(url: str) -> int:
+    """Extracts port integer from a given URL or host:port string, returning None if not found."""
+    if not url:
+        return None
+    import urllib.parse
+    parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
+    if parsed.port:
+        return parsed.port
+    return None
+
+

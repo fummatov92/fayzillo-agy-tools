@@ -1,8 +1,12 @@
 import os
 import sys
 import json
+import sqlite3
 import tempfile
+import threading
 import subprocess
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from agy_tools.utils import validate_safe_port, extract_port_from_url
 from agy_tools.adapters.nestjs_adapter import NestJSAdapter
 from agy_tools.adapters.express_adapter import ExpressAdapter
 from agy_tools.adapters.go_adapter import GoAdapter
@@ -14,8 +18,15 @@ from agy_tools.modules.doc_tool import (
     export_markdown_modular,
     export_typescript_modular,
     export_postman_collection,
-    group_endpoints_by_module
+    group_endpoints_by_module,
+    load_probe_config,
+    is_table_safe,
+    sanitize_probed_data,
+    sanitize_row_values,
+    sync_probe_db,
+    probe_safe_endpoints
 )
+
 
 def test_nestjs_adapter_advanced():
     print("[TEST] Testing NestJS Adapter (DTOs, Prisma & Validation)...")
@@ -474,6 +485,316 @@ export class CreateCompanyDto {
 
         print("  ✓ NestJS DTO multiline decorators & exclamation mark tests passed (BUG-002 fixed).")
 
+def test_validate_safe_port_and_security():
+    print("[TEST] Testing Port Safety Validation & System Port Restrictions...")
+    # Safe ports (15800-15900)
+    assert validate_safe_port(15800) is True
+    assert validate_safe_port(15842) is True
+    assert validate_safe_port(15900) is True
+
+    # Forbidden system / prod ports
+    forbidden = [80, 443, 3000, 3306, 4000, 5432, 5433, 6379, 8080, 8090, 9000, 27017, 12345]
+    for port in forbidden:
+        try:
+            validate_safe_port(port)
+            assert False, f"Port {port} should have raised PermissionError!"
+        except PermissionError:
+            pass
+
+    assert extract_port_from_url("http://127.0.0.1:15842/api/v1/test") == 15842
+    assert extract_port_from_url("postgresql://user:pass@127.0.0.1:15850/dev_db") == 15850
+    assert extract_port_from_url("sqlite:///tmp/dev.db") is None
+    print("  ✓ Port Safety Validation tests passed.")
+
+def test_load_probe_config_parsing():
+    print("[TEST] Testing .proberc, .env.probe, and .probe-safe-tables Discovery...")
+    with tempfile.TemporaryDirectory(dir="/home/fayzillo/Desktop") as tmpdir:
+        # 1. Test .proberc JSON
+        with open(os.path.join(tmpdir, ".proberc"), "w", encoding="utf-8") as f:
+            json.dump({
+                "base_url": "http://127.0.0.1:15802",
+                "dev_db": "postgresql://dev:pass@127.0.0.1:15842/sandbox_db",
+                "safe_tables": ["products", "categories"]
+            }, f)
+
+        cfg = load_probe_config(tmpdir)
+        assert cfg["base_url"] == "http://127.0.0.1:15802"
+        assert cfg["dev_db"] == "postgresql://dev:pass@127.0.0.1:15842/sandbox_db"
+        assert "products" in cfg["safe_tables"]
+
+        # 2. Test .env.probe override
+        with open(os.path.join(tmpdir, ".env.probe"), "w", encoding="utf-8") as f:
+            f.write("PROBE_BASE_URL=http://127.0.0.1:15805\nDEV_DOCKER_CONTAINER=sandbox_postgres\n")
+
+        cfg = load_probe_config(tmpdir)
+        assert cfg["base_url"] == "http://127.0.0.1:15805"
+        assert cfg["dev_docker"] == "sandbox_postgres"
+
+        # 3. Test .probe-safe-tables
+        with open(os.path.join(tmpdir, ".probe-safe-tables"), "w", encoding="utf-8") as f:
+            f.write("users_public\narticles\n# comment\n")
+
+        cfg = load_probe_config(tmpdir)
+        assert "users_public" in cfg["safe_tables"]
+        assert "articles" in cfg["safe_tables"]
+
+        # 4. Forbidden port in proberc should raise PermissionError
+        if os.path.exists(os.path.join(tmpdir, ".env.probe")):
+            os.remove(os.path.join(tmpdir, ".env.probe"))
+
+        with open(os.path.join(tmpdir, ".proberc"), "w", encoding="utf-8") as f:
+            json.dump({"base_url": "http://127.0.0.1:5432"}, f)
+        try:
+            load_probe_config(tmpdir)
+            assert False, "Forbidden port 5432 in base_url should raise PermissionError"
+        except PermissionError:
+            pass
+
+
+    print("  ✓ Configuration Discovery tests passed.")
+
+def test_sanitize_probed_data_secrets():
+    print("[TEST] Testing Recursive Secret Masking & Data Sanitization...")
+    payload = {
+        "status": "success",
+        "user": {
+            "id": 1,
+            "name": "Fayzillo",
+            "password": "P@ssw0rd_Secret123!",
+            "access_token": "ghp_123456789012345678901234567890123456",
+            "auth_token": "123456789:ABCdefGHIjklMNOpqrsTUVwxyz1234567",
+            "api_key": "AIzaSyD-1234567890abcdef1234567890abc",
+            "profile": {
+                "email": "test@example.com",
+                "credit_card": "4111222233334444"
+            }
+        },
+        "items": [
+            {"item_id": 101, "secret_key": "my_hidden_secret"},
+            {"item_id": 102, "name": "Mechanical Keyboard"}
+        ]
+    }
+
+    sanitized = sanitize_probed_data(payload)
+    assert sanitized["user"]["name"] == "Fayzillo"
+    assert sanitized["user"]["password"] == "[REDACTED_SECRET]"
+    assert sanitized["user"]["access_token"] == "[REDACTED_SECRET]"
+    assert sanitized["user"]["auth_token"] == "[REDACTED_SECRET]"
+    assert sanitized["user"]["api_key"] == "[REDACTED_SECRET]"
+    assert sanitized["user"]["profile"]["credit_card"] == "[REDACTED_SECRET]"
+    assert sanitized["items"][0]["secret_key"] == "[REDACTED_SECRET]"
+    assert sanitized["items"][1]["name"] == "Mechanical Keyboard"
+    print("  ✓ Recursive Secret Masking tests passed.")
+
+def test_sync_probe_db_sandbox_snapshot():
+    print("[TEST] Testing Safe DB Data Sync & Blacklist Filtering...")
+    with tempfile.TemporaryDirectory(dir="/home/fayzillo/Desktop") as tmpdir:
+        src_db = os.path.join(tmpdir, "source_production.db")
+        tgt_db = os.path.join(tmpdir, "dev_sandbox.db")
+
+        # Setup source database
+        conn = sqlite3.connect(src_db)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE products (id INTEGER PRIMARY KEY, title TEXT, price REAL, secret_code TEXT)")
+        cur.execute("INSERT INTO products VALUES (1, 'Gaming Mouse', 49.99, 'TOP_SECRET_CODE')")
+        cur.execute("INSERT INTO products VALUES (2, 'Monitor 4K', 399.00, 'DISCOUNT_SECRET')")
+
+        cur.execute("CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT, email TEXT)")
+        cur.execute("INSERT INTO categories VALUES (1, 'Electronics', 'manager@store.uz')")
+
+        # Blacklisted sensitive tables
+        cur.execute("CREATE TABLE payme_transactions (id INTEGER PRIMARY KEY, amount REAL, card_token TEXT)")
+        cur.execute("INSERT INTO payme_transactions VALUES (1, 100000.0, 'token_xyz123')")
+
+        cur.execute("CREATE TABLE user_passwords (id INTEGER PRIMARY KEY, hash TEXT)")
+        cur.execute("INSERT INTO user_passwords VALUES (1, '$2b$12$e8Y7z...')")
+
+        cur.execute("CREATE TABLE billing_invoices (id INTEGER PRIMARY KEY, total REAL)")
+        cur.execute("INSERT INTO billing_invoices VALUES (1, 550.0)")
+        conn.commit()
+        conn.close()
+
+        # Run sync
+        result = sync_probe_db(src_db, tgt_db)
+
+        assert result["status"] == "SUCCESS"
+        synced_names = [t["table"] for t in result["synced_tables"]]
+        skipped_names = [t["table"] for t in result["skipped_tables"]]
+
+        assert "products" in synced_names
+        assert "categories" in synced_names
+        assert "payme_transactions" in skipped_names
+        assert "user_passwords" in skipped_names
+        assert "billing_invoices" in skipped_names
+
+        # Verify target DB contents and sanitization
+        tgt_conn = sqlite3.connect(tgt_db)
+        tgt_cur = tgt_conn.cursor()
+        tgt_cur.execute("SELECT title, secret_code FROM products")
+        rows = tgt_cur.fetchall()
+        assert len(rows) == 2
+        assert rows[0][0] == "Gaming Mouse"
+        assert rows[0][1] == "[REDACTED_PASSWORD]"
+
+        tgt_cur.execute("SELECT name, email FROM categories")
+        cat_rows = tgt_cur.fetchall()
+        assert len(cat_rows) == 1
+        assert cat_rows[0][0] == "Electronics"
+        assert "sample_user_" in cat_rows[0][1]
+
+        tgt_conn.close()
+    print("  ✓ Safe DB Data Sync & Snapshot tests passed.")
+
+class MockProbeServerHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def do_GET(self):
+        if self.path == "/api/v1/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "UP", "version": "1.0.0"}).encode("utf-8"))
+        elif self.path == "/api/v1/products":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            payload = {
+                "items": [
+                    {
+                        "id": 101,
+                        "title": "Smart Watch",
+                        "price": 299.99,
+                        "db_password": "super_secret_db_pass",
+                        "access_token": "ghp_123456789012345678901234567890123456"
+                    }
+                ],
+                "total": 1
+            }
+            self.wfile.write(json.dumps(payload).encode("utf-8"))
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def test_active_probing_live_http_server():
+    print("[TEST] Testing Live Sandbox Active Probing & Exporters Integration...")
+    # Start mock server on safe port 15842
+    server = HTTPServer(("127.0.0.1", 15842), MockProbeServerHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    try:
+        endpoints = [
+            {
+                "method": "GET",
+                "path": "/api/v1/health",
+                "handler": "getHealth",
+                "module": "health",
+                "file": "health.controller.ts",
+                "line": 10
+            },
+            {
+                "method": "GET",
+                "path": "/api/v1/products",
+                "handler": "listProducts",
+                "module": "products",
+                "file": "products.controller.ts",
+                "line": 20
+            }
+        ]
+
+        stats = probe_safe_endpoints(endpoints, base_url="http://127.0.0.1:15842")
+        assert stats["successful"] == 2
+        assert stats["failed"] == 0
+
+        health_ep = next(e for e in endpoints if e["path"] == "/api/v1/health")
+        assert health_ep["probed"] is True
+        assert health_ep["probe_status"] == 200
+        assert health_ep["mock_response"]["status"] == "UP"
+
+        prod_ep = next(e for e in endpoints if e["path"] == "/api/v1/products")
+        assert prod_ep["probed"] is True
+        assert prod_ep["mock_response"]["items"][0]["title"] == "Smart Watch"
+        assert prod_ep["mock_response"]["items"][0]["db_password"] == "[REDACTED_SECRET]"
+        assert prod_ep["mock_response"]["items"][0]["access_token"] == "[REDACTED_SECRET]"
+
+        # Test Exporters with probed data
+        with tempfile.TemporaryDirectory(dir="/home/fayzillo/Desktop") as tmpdir:
+            md_files = export_markdown_modular(endpoints, tmpdir, "ProbedAPI")
+            assert len(md_files) > 0
+            with open(md_files[0], "r", encoding="utf-8") as f:
+                content = f.read()
+                assert "Live Dev DB Sandbox Probed" in content
+
+            ts_files = export_typescript_modular(endpoints, tmpdir)
+            assert len(ts_files) > 0
+
+            pm_file = os.path.join(tmpdir, "postman", "api_collection.json")
+            export_postman_collection(endpoints, pm_file, "ProbedAPI")
+            with open(pm_file, "r", encoding="utf-8") as f:
+                pm_data = json.load(f)
+                first_item = pm_data["item"][0]["item"][0]
+                assert "Probed" in first_item["response"][0]["name"] or "Probed" in first_item["response"][0]["status"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    print("  ✓ Live Sandbox Active Probing & Exporters tests passed.")
+
+def test_doc_cli_sandbox_probing_flags():
+    print("[TEST] Testing agy-tool doc CLI flags (--probe, --probe-db, --dev-db)...")
+    # Start mock server on 15843
+    server = HTTPServer(("127.0.0.1", 15843), MockProbeServerHandler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+
+    try:
+        with tempfile.TemporaryDirectory(dir="/home/fayzillo/Desktop") as tmpdir:
+            # Create sample Express app in tmpdir
+            with open(os.path.join(tmpdir, "package.json"), "w") as f:
+                json.dump({"dependencies": {"express": "^4.18.0"}}, f)
+
+            with open(os.path.join(tmpdir, "app.js"), "w") as f:
+                f.write("""
+const express = require('express');
+const app = express();
+app.get('/api/v1/health', (req, res) => res.json({ status: 'OK' }));
+""")
+
+            # Create sample DBs
+            src_db = os.path.join(tmpdir, "source.db")
+            dev_db = os.path.join(tmpdir, "dev.db")
+            conn = sqlite3.connect(src_db)
+            conn.execute("CREATE TABLE sample (id INT, name TEXT)")
+            conn.execute("INSERT INTO sample VALUES (1, 'Test')")
+            conn.commit()
+            conn.close()
+
+            # Execute CLI
+            cli_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "agy-tool")
+            cmd = [
+                sys.executable,
+                cli_path,
+                "doc",
+                tmpdir,
+                "--probe",
+                "--probe-db",
+                f"--dev-db={dev_db}",
+                f"--source-db={src_db}",
+                "--probe-url=http://127.0.0.1:15843"
+            ]
+
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            assert proc.returncode == 0, f"CLI exited with {proc.returncode}: {proc.stderr}"
+            data = json.loads(proc.stdout)
+            assert data["success"] is True
+            assert data["data"]["total_endpoints"] == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    print("  ✓ agy-tool doc CLI Sandbox Probing tests passed.")
+
 def main():
     test_nestjs_adapter_advanced()
     test_nestjs_dto_multiline_and_exclamation()
@@ -482,7 +803,14 @@ def main():
     test_laravel_adapter()
     test_api_ignore_and_cache()
     test_modular_exporters()
-    print("🎉 ALL DOC TOOL & ADAPTER TESTS PASSED SUCCESSFULLY!")
+    test_validate_safe_port_and_security()
+    test_load_probe_config_parsing()
+    test_sanitize_probed_data_secrets()
+    test_sync_probe_db_sandbox_snapshot()
+    test_active_probing_live_http_server()
+    test_doc_cli_sandbox_probing_flags()
+    print("🎉 ALL DOC TOOL & SANDBOX PROBING TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     main()
+

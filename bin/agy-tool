@@ -114,11 +114,17 @@ def build_parser():
 
     # === DOC MODULE ===
     doc_p = subparsers.add_parser("doc", help="Multi-Framework Zero-Token API Kontrakt & DTO Generator")
-    doc_p.add_argument("path", nargs="?", default=".", help="Project path to scan")
+    doc_p.add_argument("path", nargs="?", default=".", help="Project path to scan or subaction (generate, probe, sync-db)")
     doc_p.add_argument("--export", default="md,ts,postman", help="Export formats (comma-separated: md,ts,postman)")
     doc_p.add_argument("--output-dir", help="Directory where docs, types, postman folders will be created")
     doc_p.add_argument("--force", action="store_true", help="Bypass cache and force re-scan")
     doc_p.add_argument("--probe", action="store_true", help="Perform safe active probing on GET endpoints if local server is running")
+    doc_p.add_argument("--probe-db", action="store_true", help="Enable Dev DB Sandbox provisioning & data sync before probing")
+    doc_p.add_argument("--dev-db", help="Dev DB Connection URL (e.g. postgresql://user:pass@127.0.0.1:15842/dev_db or sqlite:///path/to/dev.db)")
+    doc_p.add_argument("--dev-docker", help="Dev Rootless Docker container name for sandbox DB")
+    doc_p.add_argument("--probe-url", "--base-url", dest="probe_url", help="Target base URL for probing (e.g. http://127.0.0.1:15801)")
+    doc_p.add_argument("--source-db", help="Source DB URL for safe snapshot sync")
+    doc_p.add_argument("--safe-tables", help="Comma-separated list of allowed tables for data sync")
 
     return parser
 

@@ -158,52 +158,164 @@ class NestJSAdapter(BaseAdapter):
             pass
 
     def _parse_dto_class_body(self, body: str) -> Dict[str, Any]:
-        """Parses property fields and class-validator decorators in class body."""
+        """Parses property fields and class-validator/swagger decorators in class body."""
         properties = {}
-        lines = body.split("\n")
-        
+        i = 0
+        n = len(body)
         current_decorators = []
-        for line in lines:
-            trimmed = line.strip()
-            if not trimmed or trimmed.startswith("//"):
+
+        while i < n:
+            # Skip whitespace
+            if body[i].isspace():
+                i += 1
                 continue
 
-            if trimmed.startswith("@"):
-                current_decorators.append(trimmed)
+            # Skip single-line comments
+            if body[i:i+2] == "//":
+                i = body.find("\n", i)
+                if i == -1:
+                    break
                 continue
 
-            # Field definition: name?: string; or readonly name: string;
-            field_match = re.match(r"(?:readonly\s+|public\s+|private\s+)?([a-zA-Z0-9_]+)(\?)?\s*:\s*([^;=]+)", trimmed)
+            # Skip multi-line comments
+            if body[i:i+2] == "/*":
+                end_c = body.find("*/", i + 2)
+                if end_c == -1:
+                    break
+                i = end_c + 2
+                continue
+
+            # Check for Decorator: starts with '@'
+            if body[i] == "@":
+                start_dec = i
+                i += 1
+                # Consume decorator identifier (e.g. ApiProperty, IsString, etc.)
+                while i < n and (body[i].isalnum() or body[i] in ["_", "$", "."]):
+                    i += 1
+
+                # Check if followed by arguments in parentheses '(...)'
+                temp_i = i
+                while temp_i < n and body[temp_i].isspace():
+                    temp_i += 1
+
+                if temp_i < n and body[temp_i] == "(":
+                    i = temp_i + 1
+                    paren_depth = 1
+                    in_quote = None
+                    escape = False
+
+                    while i < n and paren_depth > 0:
+                        ch = body[i]
+                        if in_quote:
+                            if escape:
+                                escape = False
+                            elif ch == "\\":
+                                escape = True
+                            elif ch == in_quote:
+                                in_quote = None
+                        else:
+                            if ch in ["'", '"', "`"]:
+                                in_quote = ch
+                            elif ch == "(":
+                                paren_depth += 1
+                            elif ch == ")":
+                                paren_depth -= 1
+                        i += 1
+
+                dec_text = body[start_dec:i].strip()
+                current_decorators.append(dec_text)
+                continue
+
+            # Parse property statement or method block
+            stmt_start = i
+            in_quote = None
+            escape = False
+            stmt_end = i
+            has_colon = False
+
+            while i < n:
+                ch = body[i]
+                if in_quote:
+                    if escape:
+                        escape = False
+                    elif ch == "\\":
+                        escape = True
+                    elif ch == in_quote:
+                        in_quote = None
+                else:
+                    if ch in ["'", '"', "`"]:
+                        in_quote = ch
+                    elif ch == ":":
+                        has_colon = True
+                    elif ch == ";":
+                        stmt_end = i
+                        i += 1
+                        break
+                    elif ch == "\n":
+                        stmt_end = i
+                        i += 1
+                        break
+                    elif ch == "@":
+                        stmt_end = i
+                        break
+                    elif ch == "{" and not has_colon:
+                        brace_depth = 1
+                        i += 1
+                        while i < n and brace_depth > 0:
+                            if body[i] == "{":
+                                brace_depth += 1
+                            elif body[i] == "}":
+                                brace_depth -= 1
+                            i += 1
+                        current_decorators = []
+                        stmt_start = i
+                        break
+                i += 1
+                stmt_end = i
+
+            stmt_text = body[stmt_start:stmt_end].strip()
+            if not stmt_text:
+                continue
+
+            # Field definition: name?: string; name!: string; readonly age: number;
+            field_match = re.match(r"^(?:(?:readonly|public|private|protected)\s+)?([a-zA-Z0-9_$]+)([\?!])?\s*:\s*([^;=]+)", stmt_text)
             if field_match:
                 field_name = field_match.group(1)
-                is_optional_field = bool(field_match.group(2))
+                opt_or_bang = field_match.group(2)
                 raw_type = field_match.group(3).strip()
+                is_optional_field = (opt_or_bang == "?")
 
                 prop_meta = {
                     "type": raw_type,
                     "required": not is_optional_field
                 }
 
-                # Evaluate class-validator decorators
+                # Evaluate class-validator and swagger decorators
                 for dec in current_decorators:
-                    if "@IsOptional()" in dec:
+                    if "@IsOptional()" in dec or "@ApiPropertyOptional" in dec:
                         prop_meta["required"] = False
+                    elif "@ApiProperty(" in dec and re.search(r"required\s*:\s*false", dec, re.IGNORECASE):
+                        prop_meta["required"] = False
+
                     if "@IsString()" in dec:
                         prop_meta["type"] = "string"
-                    elif "@IsNumber(" in dec or "@IsInt()" in dec:
+                    elif "@IsNumber(" in dec or "@IsInt(" in dec or "@IsNumber()" in dec or "@IsInt()" in dec:
                         prop_meta["type"] = "number"
                     elif "@IsBoolean()" in dec:
                         prop_meta["type"] = "boolean"
                     elif "@IsArray()" in dec:
                         if not prop_meta["type"].endswith("[]"):
                             prop_meta["type"] = f"{prop_meta['type']}[]" if prop_meta["type"] != "any" else "any[]"
-                    elif "@IsEmail(" in dec:
+                    elif "@IsEmail(" in dec or "@IsEmail()" in dec:
                         prop_meta["type"] = "string"
                         prop_meta["format"] = "email"
-                    elif "@IsUUID(" in dec:
+                    elif "@IsUUID(" in dec or "@IsUUID()" in dec:
                         prop_meta["type"] = "string"
                         prop_meta["format"] = "uuid"
-                    
+                    elif "@IsDate(" in dec or "@IsDate()" in dec or "@IsDateString(" in dec or "@IsDateString()" in dec:
+                        prop_meta["type"] = "string"
+                        prop_meta["format"] = "date-time"
+
                     min_m = re.search(r"@Min\((\d+)\)", dec)
                     if min_m:
                         prop_meta["min"] = int(min_m.group(1))
@@ -215,13 +327,18 @@ class NestJSAdapter(BaseAdapter):
                         prop_meta["minLength"] = int(len_m.group(1))
                         if len_m.group(2):
                             prop_meta["maxLength"] = int(len_m.group(2))
+                    min_len_m = re.search(r"@MinLength\((\d+)\)", dec)
+                    if min_len_m:
+                        prop_meta["minLength"] = int(min_len_m.group(1))
+                    max_len_m = re.search(r"@MaxLength\((\d+)\)", dec)
+                    if max_len_m:
+                        prop_meta["maxLength"] = int(max_len_m.group(1))
 
                 properties[field_name] = prop_meta
                 current_decorators = []
             else:
-                # If non-field and non-decorator line, reset decorators
-                if not trimmed.startswith("@"):
-                    current_decorators = []
+                # If non-field statement, reset decorators
+                current_decorators = []
 
         return properties
 

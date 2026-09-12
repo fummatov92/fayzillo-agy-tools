@@ -375,8 +375,108 @@ def test_modular_exporters():
 
     print("  ✓ Modular Exporters tests passed.")
 
+def test_nestjs_dto_multiline_and_exclamation():
+    print("[TEST] Testing NestJS Adapter Multiline Decorators & Exclamation Mark fields (BUG-002)...")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "package.json"), "w") as f:
+            json.dump({"dependencies": {"@nestjs/core": "^10.0.0", "@nestjs/common": "^10.0.0"}}, f)
+
+        os.makedirs(os.path.join(tmpdir, "src", "modules", "company", "dto"), exist_ok=True)
+        with open(os.path.join(tmpdir, "src", "modules", "company", "dto", "create-company.dto.ts"), "w") as f:
+            f.write("""
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  IsTimeZone,
+  MaxLength,
+  MinLength,
+} from 'class-validator';
+
+export class CreateCompanyDto {
+  @ApiProperty({
+    example: 'ZDES',
+  })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  name!: string;
+
+  @ApiPropertyOptional({
+    example: 'ZDES LLC',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  legalName?: string;
+
+  @ApiPropertyOptional({
+    example: '+998901234567',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(50)
+  phone?: string;
+
+  @ApiPropertyOptional({
+    example: 'info@zdes.uz',
+  })
+  @IsOptional()
+  @IsEmail()
+  @MaxLength(255)
+  email?: string;
+
+  @ApiPropertyOptional({
+    example: 'Tashkent city, Yunusobod district',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  address?: string;
+
+  @ApiPropertyOptional({
+    example: 'Asia/Tashkent',
+    default: 'Asia/Tashkent',
+    description:
+      'IANA timezone used to compute attendance schedules for this company',
+  })
+  @IsOptional()
+  @IsTimeZone()
+  timezone?: string;
+}
+""")
+
+        adapter = NestJSAdapter(tmpdir)
+        adapter._parse_dto_files()
+
+        assert "CreateCompanyDto" in adapter.dtos, "CreateCompanyDto should be parsed"
+        props = adapter.dtos["CreateCompanyDto"]["properties"]
+
+        # 1. Definite assignment assertion 'name!: string' should be captured and required
+        assert "name" in props, "'name' field must be captured"
+        assert props["name"]["type"] == "string"
+        assert props["name"]["required"] is True
+        assert props["name"]["minLength"] == 1
+        assert props["name"]["maxLength"] == 255
+
+        # 2. Optional properties
+        assert "legalName" in props and props["legalName"]["required"] is False
+        assert "phone" in props and props["phone"]["required"] is False
+        assert "email" in props and props["email"]["format"] == "email" and props["email"]["required"] is False
+        assert "address" in props and props["address"]["required"] is False
+        assert "timezone" in props and props["timezone"]["required"] is False
+
+        # 3. No fake fields from multiline decorator arguments
+        assert "example" not in props, "Fake property 'example' should NOT exist"
+        assert "default" not in props, "Fake property 'default' should NOT exist"
+        assert "description" not in props, "Fake property 'description' should NOT exist"
+
+        print("  ✓ NestJS DTO multiline decorators & exclamation mark tests passed (BUG-002 fixed).")
+
 def main():
     test_nestjs_adapter_advanced()
+    test_nestjs_dto_multiline_and_exclamation()
     test_express_zod_adapter()
     test_go_adapter()
     test_laravel_adapter()

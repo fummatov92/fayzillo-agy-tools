@@ -107,3 +107,121 @@ if f_match and f_match.group(1) not in RESERVED_WORDS:
 ---
 
 *Hisobot muallifi: Lead Teamwork Worker | Sessiya: `0d0071d7-17eb-43aa-bcfe-d77d4c83ee92`*
+
+---
+
+## BUG-002 — `nestjs_adapter.py` : Ko'p qatorli dekoratorlar va `!` (definite assignment) maydonlarini DTO da xato tahlil qilish
+
+**Holat:** 🟢 Fixed  
+**Muhimlik:** High  
+**Modul:** `agy_tools/adapters/nestjs_adapter.py` → `_parse_dto_class_body()`  
+**Aniqlagan:** Core AI Engine (AGY sessiya: `a8b64ff4-d90b-4ac1-9c7c-129824ce21b6`)  
+**Aniqlash sanasi:** 2026-09-12  
+**Tuzatilgan sana:** 2026-09-12  
+**Mas'ul Agent:** Lead Teamwork Worker (`9f412e22-79b0-4b97-8fc0-92385148675c`)  
+
+---
+
+### 📋 Tavsif
+
+`agy-tool doc generate` buyrug'i NestJS DTO fayllarini tahlil qilganda:
+1. Ko'p qatorli `@ApiProperty({...})` yoki `@ApiPropertyOptional({...})` dekoratorlarining ichidagi parametrlarini (masalan `example: '...'`, `default: '...'`, `description: '...'`) alohida DTO property deb o'ylab, soxta maydonlar yaratib yuboradi.
+2. TypeScriptning definite assignment assertion (`!`) belgisi bilan e'lon qilingan maydonlar (masalan `name!: string;`) regexga tushmasdan DTO dan butunlay tushib qoladi.
+
+---
+
+### 🔬 Ildiz Sabab
+
+1. `_parse_dto_class_body()` qator-ba-qator (`lines = body.split("\n")`) o'qigan va faqat `@` bilan boshlangan satrlarni dekorator deb hisoblagan. Ko'p qatorli dekoratorning 2-va keyingi satrlari (`example: '...'`) `@` bilan boshlanmagani uchun property regexiga to'g'ri kelib qolib, soxta maydon sifatida qo'shilgan.
+2. Property regexi `([a-zA-Z0-9_]+)(\?)?\s*:\s*([^;=]+)` faqat `?` ni tekshirgan, `!` belgisi bo'lsa regex mos kelmagan.
+
+---
+
+### 🧪 Reproduksiya
+
+**Test fayli:** `src/modules/company/dto/create-company.dto.ts` (`Loyihalar/zdes_backend`)
+
+```typescript
+export class CreateCompanyDto {
+  @ApiProperty({
+    example: 'ZDES',
+  })
+  @IsString()
+  @MinLength(1)
+  @MaxLength(255)
+  name!: string;
+
+  @ApiPropertyOptional({
+    example: 'Asia/Tashkent',
+    default: 'Asia/Tashkent',
+    description:
+      'IANA timezone used to compute attendance schedules for this company',
+  })
+  @IsOptional()
+  @IsTimeZone()
+  timezone?: string;
+}
+```
+
+**Oldingi Xato Natija:**
+```json
+{
+  "example": { "type": "'Asia/Tashkent',", "required": true },
+  "default": { "type": "'Asia/Tashkent',", "required": true },
+  "timezone": { "type": "string", "required": false }
+}
+// ❌ 'name' maydoni yo'q, 'example' va 'default' soxta maydonlar mavjud
+```
+
+**Kutilgan va Yangi Natija:**
+```json
+{
+  "name": {
+    "type": "string",
+    "required": true,
+    "minLength": 1,
+    "maxLength": 255
+  },
+  "timezone": {
+    "type": "string",
+    "required": false
+  }
+}
+// ✅ 'name' to'g'ri o'qildi, soxta maydonlar yo'q
+```
+
+---
+
+### ✅ Amalga Oshirilgan Tuzatish
+
+1. `_parse_dto_class_body` oqimli token/blok parsing mexanizmiga o'tkazildi:
+   - `@` dekoratorlari ochuvchi `(` va yopuvchi `)` qavslari balansi bo'yicha to'liq bitta blok sifatida tanib olinadi va ko'p qatorli bo'lsa ham ichki satrlari property deb hisoblanmaydi.
+2. Property regexi `([a-zA-Z0-9_$]+)([\?!])?\s*:\s*([^;=]+)` shakliga keltirilib, `!` (definite assignment) va `?` (optional) to'g'ri ajratildi (`!` bo'lsa `required = true`, `?` bo'lsa `required = false`).
+3. `@MinLength` va `@MaxLength` kabi qo'shimcha dekoratorlar ham qo'llab-quvvatlandi.
+4. `tests/test_doc_tool.py` da yangi test (`test_nestjs_dto_multiline_and_exclamation`) qo'shildi.
+5. `install.sh` orqali yangilandi va `zdes_backend` real loyihasida tekshirildi.
+
+---
+
+### 📦 Ta'sir Doirasi
+
+| Holat | Ta'sir |
+|-------|--------|
+| Bir qatorli `@IsString()`, `@IsNumber()` kabi dekoratorlar | ✅ To'g'ri ishlaydi |
+| Ko'p qatorli `@ApiProperty({...})`, `@ApiPropertyOptional({...})` dekoratorlari | ✅ Soxta maydonlar kirmaydi |
+| `!` (definite assignment) bilan yozilgan maydonlar (`name!: string;`) | ✅ To'g'ri aniqlanadi (`required: true`) |
+| `?` (optional) maydonlar (`age?: number;`) | ✅ To'g'ri aniqlanadi (`required: false`) |
+| Boshqa freymvork adapterlari | ✅ Ta'sir yo'q (izolyatsiyalangan) |
+
+---
+
+### 📌 Tegishli Fayllar
+
+- [`agy_tools/adapters/nestjs_adapter.py`](../agy_tools/adapters/nestjs_adapter.py) — `_parse_dto_class_body()` yangilandi
+- [`tests/test_doc_tool.py`](../tests/test_doc_tool.py) — Yangi test qo'shildi
+- [`bugs.md`](./bugs.md) — Hujjatlashtirildi
+
+---
+
+*Hisobot muallifi: Lead Teamwork Worker | Sessiya: `9f412e22-79b0-4b97-8fc0-92385148675c`*
+

@@ -11,7 +11,7 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool
+from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool, doc_tool
 from agy_tools.utils import emit_result, set_checkpoint_hook, set_result_hook
 from agy_tools.logger import RunLogger, get_logger
 
@@ -112,6 +112,14 @@ def build_parser():
     dbg_chk = dbg_sub.add_parser("check", help="Fast syntax / typecheck")
     dbg_chk.add_argument("path", nargs="?", default=".", help="Target project directory")
 
+    # === DOC MODULE ===
+    doc_p = subparsers.add_parser("doc", help="Multi-Framework Zero-Token API Kontrakt & DTO Generator")
+    doc_p.add_argument("path", nargs="?", default=".", help="Project path to scan")
+    doc_p.add_argument("--export", default="md,ts,postman", help="Export formats (comma-separated: md,ts,postman)")
+    doc_p.add_argument("--output-dir", help="Directory where docs, types, postman folders will be created")
+    doc_p.add_argument("--force", action="store_true", help="Bypass cache and force re-scan")
+    doc_p.add_argument("--probe", action="store_true", help="Perform safe active probing on GET endpoints if local server is running")
+
     return parser
 
 
@@ -171,12 +179,13 @@ def main():
         if args.describe or not args.module:
             capabilities = {
                 "name": "agy-tool",
-                "version": "1.1.0",
+                "version": "1.2.0",
                 "modules": {
                     "sys": sys_tool.get_sys_describe(),
                     "code": code_tool.get_code_describe(),
                     "secure": secure_tool.get_secure_describe(),
-                    "debug": debug_tool.get_debug_describe()
+                    "debug": debug_tool.get_debug_describe(),
+                    "doc": doc_tool.get_doc_describe()
                 }
             }
             emit_result(capabilities)
@@ -223,6 +232,9 @@ def main():
             else:
                 emit_result(None, success=False, error=f"Noma'lum debug buyrug'i: {args.action}")
                 exit_code = 1
+
+        elif args.module == "doc":
+            doc_tool.run_doc_generate(args)
 
         else:
             emit_result(None, success=False, error=f"Noma'lum modul: {args.module}")

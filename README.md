@@ -19,6 +19,18 @@ Ushbu vositalar to'plami AI agentlarining (AGY) token sarfini 95%+ tejash, real 
    - `agy-tool secure scan [path]` — Sirlar va maxfiy kalitlar sizib chiqishini aniqlash.
    - `agy-tool secure redact [path]` — Maxfiy ma'lumotlarni niqoblash (`[REDACTED_...]`).
 
+4. **`debug`**:
+   - `agy-tool debug trace [log]` — Xato stack trace tahlili va kod kontekstini aniqlash.
+   - `agy-tool debug check [path]` — TypeScript / Python loyihalari sintaksis va tip diagnostikasi.
+
+5. **`doc`** *(Zero-Token API Kontrakt & DTO Generator)*:
+   - `agy-tool doc [path]` — NestJS, Express, Go, Laravel loyihalaridan 3 tomonlama sinxron eksport (`docs/api_contracts.md`, `types/api.contracts.d.ts`, `postman/api_collection.json`).
+   - `--export=md,ts,postman` — Eksport formatlarini tanlash.
+   - `--output-dir=[dir]` — Hujjatlar saqlanadigan yo'l.
+   - `--force` — Incremental Sha256 keshini chetlab o'tish.
+   - `--probe` — Xavfsiz GET-only aktiv probing.
+   - `.apiignore` — Billing, webhooklar va maxfiy endpointlarni avtomatik filtrlash.
+
 ## 🛠 O'rnatish
 
 ```bash

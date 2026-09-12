@@ -11,19 +11,18 @@ from agy_tools.modules.doc_tool import (
     load_api_ignore,
     is_endpoint_ignored,
     compute_project_hash,
-    export_markdown_contracts,
-    export_typescript_dtos,
-    export_postman_collection
+    export_markdown_modular,
+    export_typescript_modular,
+    export_postman_collection,
+    group_endpoints_by_module
 )
 
 def test_nestjs_adapter_advanced():
     print("[TEST] Testing NestJS Adapter (DTOs, Prisma & Validation)...")
     with tempfile.TemporaryDirectory() as tmpdir:
-        # 1. package.json
         with open(os.path.join(tmpdir, "package.json"), "w") as f:
             json.dump({"dependencies": {"@nestjs/core": "^10.0.0", "@nestjs/common": "^10.0.0"}}, f)
 
-        # 2. Prisma schema
         os.makedirs(os.path.join(tmpdir, "prisma"), exist_ok=True)
         with open(os.path.join(tmpdir, "prisma", "schema.prisma"), "w") as f:
             f.write("""
@@ -37,7 +36,6 @@ model Product {
 }
 """)
 
-        # 3. DTO file
         os.makedirs(os.path.join(tmpdir, "src", "dto"), exist_ok=True)
         with open(os.path.join(tmpdir, "src", "dto", "create-product.dto.ts"), "w") as f:
             f.write("""
@@ -57,7 +55,6 @@ export class CreateProductDto {
 }
 """)
 
-        # 4. Controller file
         os.makedirs(os.path.join(tmpdir, "src", "controllers"), exist_ok=True)
         with open(os.path.join(tmpdir, "src", "controllers", "product.controller.ts"), "w") as f:
             f.write("""
@@ -88,7 +85,6 @@ export class ProductController {
         endpoints = adapter.scan()
         assert len(endpoints) == 3
 
-        # Check POST endpoint
         post_ep = next(e for e in endpoints if e["method"] == "POST")
         assert post_ep["path"] == "/api/v1/products/create"
         assert post_ep["handler"] == "createProduct"
@@ -106,7 +102,6 @@ def test_express_zod_adapter():
         with open(os.path.join(tmpdir, "package.json"), "w") as f:
             json.dump({"dependencies": {"express": "^4.18.0", "zod": "^3.22.0"}}, f)
 
-        # Express routes with Zod schema
         with open(os.path.join(tmpdir, "routes.ts"), "w") as f:
             f.write("""
 import { Router } from 'express';
@@ -228,7 +223,6 @@ class StoreArticleRequest extends FormRequest {
         assert adapter.detect() is True
 
         endpoints = adapter.scan()
-        # 2 routes + 5 apiResource routes = 7
         assert len(endpoints) == 7
 
         store_ep = next(e for e in endpoints if e["method"] == "POST" and e["path"] == "/api/articles")
@@ -261,7 +255,6 @@ click
         assert is_endpoint_ignored(ep_click, patterns) is True
         assert is_endpoint_ignored(ep_safe, patterns) is False
 
-        # Test hash computation
         h1 = compute_project_hash(tmpdir)
         with open(os.path.join(tmpdir, "test.ts"), "w") as f:
             f.write("console.log('updated');")
@@ -269,13 +262,14 @@ click
         assert h1 != h2
     print("  ✓ .apiignore and caching tests passed.")
 
-def test_3way_exporters():
-    print("[TEST] Testing 3-Way Exporters (Markdown, TypeScript, Postman)...")
+def test_modular_exporters():
+    print("[TEST] Testing Modular Exporters (docs/<module>/, types/<module>/, docs/README.md)...")
     sample_endpoints = [
         {
             "method": "POST",
             "path": "/api/v1/orders",
             "handler": "createOrder",
+            "module": "orders",
             "summary": "Create a new order",
             "auth": True,
             "params": [],
@@ -297,43 +291,89 @@ def test_3way_exporters():
             },
             "mock_request": {"itemId": "item_123", "count": 2},
             "mock_response": {"orderId": "ord_999", "status": "pending"},
-            "file": "src/order.controller.ts",
+            "file": "src/modules/orders/order.controller.ts",
             "line": 10
+        },
+        {
+            "method": "GET",
+            "path": "/api/v1/users",
+            "handler": "listUsers",
+            "module": "users",
+            "summary": "List users",
+            "auth": False,
+            "params": [],
+            "query": [],
+            "request_body": None,
+            "response": {
+                "status": 200,
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean", "required": True},
+                    "data": {"type": "array", "required": True}
+                }
+            },
+            "mock_request": {},
+            "mock_response": {"success": True, "data": []},
+            "file": "src/modules/users/users.controller.ts",
+            "line": 8
         }
     ]
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        md_file = os.path.join(tmpdir, "docs", "api_contracts.md")
-        ts_file = os.path.join(tmpdir, "types", "api.contracts.d.ts")
+        md_files = export_markdown_modular(sample_endpoints, tmpdir, "ModularProject")
+        ts_files = export_typescript_modular(sample_endpoints, tmpdir)
         pm_file = os.path.join(tmpdir, "postman", "api_collection.json")
+        export_postman_collection(sample_endpoints, pm_file, "ModularProject")
 
-        export_markdown_contracts(sample_endpoints, md_file, "TestProject")
-        export_typescript_dtos(sample_endpoints, ts_file)
-        export_postman_collection(sample_endpoints, pm_file, "TestProject")
+        orders_md = os.path.join(tmpdir, "docs", "orders", "api_contracts.md")
+        users_md = os.path.join(tmpdir, "docs", "users", "api_contracts.md")
+        readme_md = os.path.join(tmpdir, "docs", "README.md")
+        master_md = os.path.join(tmpdir, "docs", "api_contracts.md")
 
-        assert os.path.exists(md_file)
-        assert os.path.exists(ts_file)
+        assert os.path.exists(orders_md), "orders/api_contracts.md should exist"
+        assert os.path.exists(users_md), "users/api_contracts.md should exist"
+        assert os.path.exists(readme_md), "docs/README.md should exist"
+        assert os.path.exists(master_md), "docs/api_contracts.md should exist"
+
+        with open(readme_md, "r") as f:
+            readme_text = f.read()
+            assert "Modullar Katalogi" in readme_text
+            assert "[📂 `orders/api_contracts.md`](./orders/api_contracts.md)" in readme_text
+            assert "[📂 `users/api_contracts.md`](./users/api_contracts.md)" in readme_text
+
+        with open(orders_md, "r") as f:
+            orders_text = f.read()
+            assert "Orders Moduli" in orders_text
+            assert "CreateOrderRequest" in orders_text
+
+        orders_ts = os.path.join(tmpdir, "types", "orders", "api.contracts.d.ts")
+        users_ts = os.path.join(tmpdir, "types", "users", "api.contracts.d.ts")
+        master_ts = os.path.join(tmpdir, "types", "api.contracts.d.ts")
+        index_ts = os.path.join(tmpdir, "types", "index.d.ts")
+
+        assert os.path.exists(orders_ts)
+        assert os.path.exists(users_ts)
+        assert os.path.exists(master_ts)
+        assert os.path.exists(index_ts)
+
+        with open(orders_ts, "r") as f:
+            orders_ts_text = f.read()
+            assert "export namespace OrdersContracts" in orders_ts_text
+            assert "export interface CreateOrderRequest" in orders_ts_text
+
+        with open(master_ts, "r") as f:
+            master_ts_text = f.read()
+            assert "export namespace ApiContracts" in master_ts_text
+            assert "export interface CreateOrderRequest" in master_ts_text
+
         assert os.path.exists(pm_file)
-
-        # Verify Markdown
-        with open(md_file, "r") as f:
-            md_content = f.read()
-            assert "/api/v1/orders" in md_content
-            assert "CreateOrderRequest" in md_content
-
-        # Verify TypeScript
-        with open(ts_file, "r") as f:
-            ts_content = f.read()
-            assert "export interface CreateOrderRequest" in ts_content
-            assert "itemId: string;" in ts_content
-            assert "export interface ApiEndpointsMap" in ts_content
-
-        # Verify Postman JSON
         with open(pm_file, "r") as f:
             pm_data = json.load(f)
-            assert pm_data["info"]["schema"] == "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-            assert len(pm_data["item"]) >= 1
-    print("  ✓ 3-Way Exporters tests passed.")
+            folder_names = [f["name"] for f in pm_data["item"]]
+            assert "📦 Orders" in folder_names
+            assert "📦 Users" in folder_names
+
+    print("  ✓ Modular Exporters tests passed.")
 
 def main():
     test_nestjs_adapter_advanced()
@@ -341,7 +381,7 @@ def main():
     test_go_adapter()
     test_laravel_adapter()
     test_api_ignore_and_cache()
-    test_3way_exporters()
+    test_modular_exporters()
     print("🎉 ALL DOC TOOL & ADAPTER TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":

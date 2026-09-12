@@ -26,17 +26,19 @@ def detect_framework(project_path: str) -> dict:
             with open(pkg_json, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 deps = {**data.get("dependencies", {}), **data.get("devDependencies", {})}
-                if "@nestjs/core" in deps:
-                    info["type"] = "NestJS"
-                elif "express" in deps:
-                    info["type"] = "Express"
-                elif "@angular/core" in deps:
+                
+                # Check angular first or nestjs before general express
+                if "@angular/core" in deps or "angular" in str(deps):
                     info["type"] = "Angular"
+                elif "@nestjs/core" in deps:
+                    info["type"] = "NestJS"
                 elif "react" in deps or "next" in deps:
                     info["type"] = "React / Next.js"
+                elif "express" in deps:
+                    info["type"] = "Express"
                 else:
                     info["type"] = "Node.js"
-                info["language"] = "TypeScript" if "typescript" in deps else "JavaScript"
+                info["language"] = "TypeScript" if ("typescript" in deps or os.path.exists(os.path.join(project_path, "tsconfig.json"))) else "JavaScript"
                 info["main"] = data.get("main", "")
         except Exception:
             pass
@@ -45,7 +47,6 @@ def detect_framework(project_path: str) -> dict:
     req_txt = os.path.join(project_path, "requirements.txt")
     if os.path.exists(pyproject) or os.path.exists(req_txt):
         info["language"] = "Python"
-        # Check fastapi, django, flask
         content = ""
         if os.path.exists(req_txt):
             try:
@@ -72,7 +73,7 @@ def scan_nestjs_endpoints(src_dir: str) -> list:
     func_regex = re.compile(r"(?:async\s+)?([a-zA-Z0-9_]+)\s*\(([^)]*)\)")
     
     for root, _, files in os.walk(src_dir):
-        if "node_modules" in root or ".git" in root or "dist" in root:
+        if "node_modules" in root or ".git" in root or "dist" in root or ".angular" in root:
             continue
         for file in files:
             if file.endswith(".controller.ts") or file.endswith(".controller.js"):
@@ -93,9 +94,12 @@ def scan_nestjs_endpoints(src_dir: str) -> list:
                             http_verb = m_match.group(1).upper()
                             sub_path = m_match.group(2) or ""
                             
-                            # Find following function name
+                            # Find following function name (skip decorators like @Roles, @ApiBearerAuth, @HttpCode)
                             func_name = "handler"
-                            for next_line in lines[i+1:min(i+5, len(lines))]:
+                            for next_line in lines[i+1:min(i+12, len(lines))]:
+                                trimmed = next_line.strip()
+                                if trimmed.startswith("@") or trimmed.startswith("//") or not trimmed:
+                                    continue
                                 f_match = func_regex.search(next_line)
                                 if f_match:
                                     func_name = f_match.group(1)
@@ -119,7 +123,7 @@ def scan_express_endpoints(src_dir: str) -> list:
     express_regex = re.compile(r"(?:app|router)\.(get|post|put|delete|patch)\((?:['\"]([^'\"]+)['\"])", re.IGNORECASE)
     
     for root, _, files in os.walk(src_dir):
-        if "node_modules" in root or ".git" in root or "dist" in root:
+        if "node_modules" in root or ".git" in root or "dist" in root or ".angular" in root:
             continue
         for file in files:
             if file.endswith((".js", ".ts")) and not file.endswith(".d.ts"):
@@ -171,20 +175,19 @@ def run_code_blueprint(args):
     target_path = safe_jail_path(args.path if hasattr(args, 'path') and args.path else ".")
     meta = detect_framework(target_path)
     
-    modules = []
     configs = []
     key_files = []
     
     for root, dirs, files in os.walk(target_path):
-        # Ignore junk
-        dirs[:] = [d for d in dirs if d not in ["node_modules", ".git", "dist", "build", ".next", "__pycache__", ".agents"]]
+        # Ignore junk & cache
+        dirs[:] = [d for d in dirs if d not in ["node_modules", ".git", "dist", "build", ".next", "__pycache__", ".agents", ".angular"]]
         rel_root = os.path.relpath(root, target_path)
         
         for file in files:
             rel_file = os.path.normpath(os.path.join(rel_root, file))
-            if file in ["package.json", "tsconfig.json", "nest-cli.json", "angular.json", "Dockerfile", "docker-compose.yml", "prisma/schema.prisma"]:
+            if file in ["package.json", "tsconfig.json", "nest-cli.json", "angular.json", "Dockerfile", "docker-compose.yml", "schema.prisma"]:
                 configs.append(rel_file)
-            elif file.endswith((".module.ts", ".service.ts", ".controller.ts", ".resolver.ts", ".routes.ts", "main.ts", "app.ts")):
+            elif file.endswith((".module.ts", ".service.ts", ".controller.ts", ".resolver.ts", ".routes.ts", "main.ts", "app.ts", ".component.ts")):
                 key_files.append(rel_file)
                 
     emit_progress("Done", 100, "Loyiha arxitekturasi tayyor.")

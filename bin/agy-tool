@@ -10,7 +10,7 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from agy_tools.modules import sys_tool, code_tool, secure_tool
+from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool
 from agy_tools.utils import emit_result
 
 def build_parser():
@@ -54,6 +54,16 @@ def build_parser():
     sec_redact.add_argument("path", help="Target file path")
     sec_redact.add_argument("--dry-run", action="store_true", help="Do not overwrite file")
     
+    # === DEBUG MODULE ===
+    dbg_p = subparsers.add_parser("debug", help="Error log diagnosis, stacktrace parser and typecheck")
+    dbg_sub = dbg_p.add_subparsers(dest="action")
+    
+    dbg_trace = dbg_sub.add_parser("trace", help="Analyze stack trace log")
+    dbg_trace.add_argument("log", nargs="?", default="", help="Raw stack trace string or log")
+    
+    dbg_chk = dbg_sub.add_parser("check", help="Fast syntax / typecheck")
+    dbg_chk.add_argument("path", nargs="?", default=".", help="Target project directory")
+    
     return parser
 
 def main():
@@ -63,11 +73,12 @@ def main():
     if args.describe or not args.module:
         capabilities = {
             "name": "agy-tool",
-            "version": "1.0.0",
+            "version": "1.1.0",
             "modules": {
                 "sys": sys_tool.get_sys_describe(),
                 "code": code_tool.get_code_describe(),
-                "secure": secure_tool.get_secure_describe()
+                "secure": secure_tool.get_secure_describe(),
+                "debug": debug_tool.get_debug_describe()
             }
         }
         emit_result(capabilities)
@@ -99,6 +110,14 @@ def main():
                 secure_tool.run_secure_redact(args)
             else:
                 emit_result(None, success=False, error=f"Noma'lum secure buyrug'i: {args.action}")
+                
+        elif args.module == "debug":
+            if args.action == "trace":
+                debug_tool.run_debug_trace(args)
+            elif args.action == "check" or not args.action:
+                debug_tool.run_debug_check(args)
+            else:
+                emit_result(None, success=False, error=f"Noma'lum debug buyrug'i: {args.action}")
                 
         else:
             emit_result(None, success=False, error=f"Noma'lum modul: {args.module}")

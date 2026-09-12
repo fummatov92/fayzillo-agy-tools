@@ -94,6 +94,7 @@ def main():
                 sys_tool.run_sys_status(args)
             else:
                 emit_result(None, success=False, error=f"Noma'lum sys buyrug'i: {args.action}")
+                sys.exit(1)
                 
         elif args.module == "code":
             if args.action == "blueprint":
@@ -102,6 +103,7 @@ def main():
                 code_tool.run_code_endpoints(args)
             else:
                 emit_result(None, success=False, error=f"Noma'lum code buyrug'i: {args.action}")
+                sys.exit(1)
                 
         elif args.module == "secure":
             if args.action == "scan":
@@ -110,6 +112,7 @@ def main():
                 secure_tool.run_secure_redact(args)
             else:
                 emit_result(None, success=False, error=f"Noma'lum secure buyrug'i: {args.action}")
+                sys.exit(1)
                 
         elif args.module == "debug":
             if args.action == "trace":
@@ -118,12 +121,16 @@ def main():
                 debug_tool.run_debug_check(args)
             else:
                 emit_result(None, success=False, error=f"Noma'lum debug buyrug'i: {args.action}")
+                sys.exit(1)
                 
         else:
             emit_result(None, success=False, error=f"Noma'lum modul: {args.module}")
+            sys.exit(1)
             
     except Exception as e:
         emit_result(None, success=False, error=str(e))
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
+

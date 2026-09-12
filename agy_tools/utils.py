@@ -23,13 +23,26 @@ def emit_result(data: dict, success: bool = True, error: str = None):
     print(json.dumps(out, separators=(',', ':'), ensure_ascii=False))
 
 def safe_jail_path(path: str, base_dir: str = None) -> str:
-    """Ensures paths are strictly within safe directories (e.g. /home/fayzillo)."""
-    if base_dir is None:
-        base_dir = os.path.expanduser("~")
+    """Ensures paths are strictly within safe directories (/home/fayzillo/Desktop and ~/.local/bin)."""
+    abs_path = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
     
-    abs_path = os.path.realpath(os.path.abspath(path))
-    abs_base = os.path.realpath(os.path.abspath(base_dir))
+    desktop_dir = os.path.realpath("/home/fayzillo/Desktop")
+    local_bin_dir = os.path.realpath(os.path.expanduser("~/.local/bin"))
     
-    if not abs_path.startswith(abs_base):
-        raise PermissionError(f"Xavfsizlik cheklovi: '{path}' jildidan tashqariga chiqish taqiqlanadi!")
+    allowed_dirs = [desktop_dir, local_bin_dir]
+    if base_dir:
+        allowed_dirs.append(os.path.realpath(os.path.abspath(os.path.expanduser(base_dir))))
+        
+    is_safe = False
+    for allowed in allowed_dirs:
+        try:
+            if os.path.commonpath([abs_path, allowed]) == allowed:
+                is_safe = True
+                break
+        except (ValueError, Exception):
+            continue
+            
+    if not is_safe:
+        raise PermissionError(f"Xavfsizlik cheklovi: '{path}' ruxsat etilgan jildlardan tashqarida!")
     return abs_path
+

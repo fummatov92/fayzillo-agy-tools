@@ -94,11 +94,108 @@ class ExpressAdapter(BaseAdapter):
 
         return props
 
+    def _build_router_mount_map(self) -> Dict[str, str]:
+        """
+        Scans project entrypoints and route files to construct a Router Mount Map.
+        Maps normalized relative file paths (e.g. 'src/routes/statusRoutes.js') to their mount prefix (e.g. '/api/status').
+        """
+        file_imports: Dict[str, Dict[str, str]] = {}
+        raw_mounts: List[tuple] = []
+
+        for root, dirs, files in os.walk(self.project_path):
+            dirs[:] = [d for d in dirs if d not in ["node_modules", ".git", "dist", "build", ".next", ".angular"]]
+            for file in files:
+                if not file.endswith((".js", ".ts", ".mjs", ".cjs")) or file.endswith(".d.ts"):
+                    continue
+                filepath = os.path.join(root, file)
+                rel_file = os.path.normpath(os.path.relpath(filepath, self.project_path))
+                file_dir = os.path.dirname(rel_file)
+
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        content = f.read()
+                except Exception:
+                    continue
+
+                current_imports = {}
+
+                # 1. Require: const statusRoutes = require('./routes/statusRoutes')
+                req_matches = re.finditer(
+                    r"(?:const|let|var)\s+(?:\{\s*(?:[A-Za-z0-9_$]+\s*:\s*)?([A-Za-z0-9_$]+)\s*\}|([A-Za-z0-9_$]+))\s*=\s*require\(\s*['\"`]([^'\"`]+)['\"`]\s*\)",
+                    content
+                )
+                for m in req_matches:
+                    var_name = m.group(1) or m.group(2)
+                    imp_path = m.group(3).strip()
+                    if imp_path.startswith("."):
+                        target_rel = os.path.normpath(os.path.join(file_dir, imp_path))
+                        current_imports[var_name] = target_rel
+
+                # 2. ES Module imports: import statusRoutes from './routes/statusRoutes'
+                imp_matches = re.finditer(
+                    r"import\s+(?:(?:\*\s+as\s+)?([A-Za-z0-9_$]+)|\{\s*(?:[A-Za-z0-9_$]+\s+as\s+)?([A-Za-z0-9_$]+)\s*\})\s+from\s+['\"`]([^'\"`]+)['\"`]",
+                    content
+                )
+                for m in imp_matches:
+                    var_name = m.group(1) or m.group(2)
+                    imp_path = m.group(3).strip()
+                    if imp_path.startswith("."):
+                        target_rel = os.path.normpath(os.path.join(file_dir, imp_path))
+                        current_imports[var_name] = target_rel
+
+                file_imports[rel_file] = current_imports
+
+                # 3. Mounts via variable: app.use('/api/status', statusRoutes)
+                use_matches = re.finditer(
+                    r"(?:app|router|server)\.use\(\s*['\"`]([^'\"`]+)['\"`]\s*,\s*(.*?)\)",
+                    content,
+                    re.DOTALL
+                )
+                for m in use_matches:
+                    mount_path = m.group(1).strip()
+                    args_part = m.group(2)
+
+                    inline_req = re.search(r"require\(\s*['\"`]([^'\"`]+)['\"`]\s*\)", args_part)
+                    if inline_req:
+                        imp_path = inline_req.group(1).strip()
+                        if imp_path.startswith("."):
+                            target_rel = os.path.normpath(os.path.join(file_dir, imp_path))
+                            raw_mounts.append((rel_file, mount_path, target_rel))
+                    else:
+                        for var_name, target_rel in current_imports.items():
+                            if re.search(rf"\b{re.escape(var_name)}\b", args_part):
+                                raw_mounts.append((rel_file, mount_path, target_rel))
+
+        mount_map: Dict[str, str] = {}
+
+        def register_aliases(target_rel: str, prefix: str):
+            clean_p = "/" + prefix.strip("/") if prefix.strip("/") else ""
+            norm_tgt = os.path.normpath(target_rel)
+            mount_map[norm_tgt] = clean_p
+            base_no_ext, ext = os.path.splitext(norm_tgt)
+            mount_map[base_no_ext] = clean_p
+            for candidate_ext in [".js", ".ts", ".mjs", ".cjs"]:
+                mount_map[base_no_ext + candidate_ext] = clean_p
+            mount_map[os.path.normpath(os.path.join(norm_tgt, "index.js"))] = clean_p
+            mount_map[os.path.normpath(os.path.join(norm_tgt, "index.ts"))] = clean_p
+            mount_map[os.path.normpath(os.path.join(base_no_ext, "index.js"))] = clean_p
+            mount_map[os.path.normpath(os.path.join(base_no_ext, "index.ts"))] = clean_p
+
+        # Multi-pass resolution for nested mounts
+        for _ in range(3):
+            for rel_file, mount_path, target_rel in raw_mounts:
+                parent_prefix = mount_map.get(rel_file, "")
+                combined_prefix = "/" + "/".join(filter(None, [parent_prefix.strip("/"), mount_path.strip("/")]))
+                register_aliases(target_rel, combined_prefix)
+
+        return mount_map
+
     def scan(self) -> List[Dict[str, Any]]:
         if not self._parsed_schemas:
             self._parse_zod_schemas()
             self._parsed_schemas = True
 
+        mount_map = self._build_router_mount_map()
         endpoints = []
         express_route_regex = re.compile(r"(?:app|router)\.(get|post|put|delete|patch)\((?:['\"]([^'\"]+)['\"])", re.IGNORECASE)
         next_app_methods = ["GET", "POST", "PUT", "DELETE", "PATCH"]
@@ -153,7 +250,9 @@ class ExpressAdapter(BaseAdapter):
                     continue
 
                 # 3. Standard Express router files
-                if file.endswith((".ts", ".js", ".mjs")) and not file.endswith(".d.ts"):
+                if file.endswith((".ts", ".js", ".mjs", ".cjs")) and not file.endswith(".d.ts"):
+                    norm_rel = os.path.normpath(relpath)
+                    mount_prefix = mount_map.get(norm_rel, "")
                     try:
                         with open(filepath, "r", encoding="utf-8") as f:
                             lines = f.readlines()
@@ -166,7 +265,18 @@ class ExpressAdapter(BaseAdapter):
                             if m:
                                 verb = m.group(1).upper()
                                 route_path = m.group(2)
-                                ep = self._create_endpoint(verb, route_path, f"{verb.lower()}_{i+1}", relpath, i + 1, associated_schema)
+
+                                clean_mount = mount_prefix.strip("/")
+                                clean_route = route_path.strip("/")
+                                if clean_mount:
+                                    if clean_route == clean_mount or clean_route.startswith(clean_mount + "/"):
+                                        full_path = "/" + clean_route
+                                    else:
+                                        full_path = "/" + "/".join(filter(None, [clean_mount, clean_route]))
+                                else:
+                                    full_path = "/" + clean_route
+
+                                ep = self._create_endpoint(verb, full_path, f"{verb.lower()}_{i+1}", relpath, i + 1, associated_schema)
                                 endpoints.append(ep)
                     except Exception:
                         pass

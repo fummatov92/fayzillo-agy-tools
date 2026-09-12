@@ -342,6 +342,62 @@ class NestJSAdapter(BaseAdapter):
 
         return properties
 
+    def _find_global_prefix(self) -> str:
+        """Discovers global prefix from main.ts / bootstrap files (e.g. app.setGlobalPrefix('api/v1'))."""
+        candidate_files = [
+            "src/main.ts", "src/main.js", "main.ts", "main.js",
+            "src/bootstrap.ts", "src/bootstrap.js", "src/index.ts", "src/index.js",
+            "src/app.ts", "src/app.js", "src/server.ts", "src/server.js"
+        ]
+        
+        found_files = []
+        for rel in candidate_files:
+            p = os.path.join(self.project_path, rel)
+            if os.path.exists(p):
+                found_files.append(p)
+                
+        # Also search any ts/js file if not found in candidate files
+        if not found_files:
+            for root, dirs, files in os.walk(self.project_path):
+                dirs[:] = [d for d in dirs if d not in ["node_modules", ".git", "dist", "build", ".next", ".angular"]]
+                for file in files:
+                    if file.endswith((".ts", ".js")) and not file.endswith((".dto.ts", ".controller.ts", ".service.ts", ".module.ts", ".spec.ts", ".d.ts")):
+                        found_files.append(os.path.join(root, file))
+
+        for fpath in found_files:
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                
+                # Check if setGlobalPrefix is called
+                match = re.search(r"(?:app|server)\.setGlobalPrefix\s*\(\s*([^,\)]+)", content)
+                if match:
+                    raw_arg = match.group(1).strip()
+                    
+                    # 1. Direct string literal: 'api/v1', "api/v1", `api/v1`
+                    str_match = re.match(r"^['\"`]([^'\"`]+)['\"`]$", raw_arg)
+                    if str_match:
+                        return str_match.group(1).strip("/")
+                    
+                    # 2. String literal inside expression (e.g., process.env.API_PREFIX || 'api/v1')
+                    str_in_expr = re.search(r"['\"`]([^'\"`]+)['\"`]", raw_arg)
+                    if str_in_expr:
+                        return str_in_expr.group(1).strip("/")
+                    
+                    # 3. Variable reference (e.g., app.setGlobalPrefix(API_PREFIX))
+                    var_name = raw_arg.strip()
+                    if re.match(r"^[A-Za-z0-9_$]+$", var_name):
+                        var_def = re.search(r"(?:const|let|var)\s+" + re.escape(var_name) + r"\s*=\s*([^;\n]+)", content)
+                        if var_def:
+                            val_expr = var_def.group(1)
+                            val_str_match = re.search(r"['\"`]([^'\"`]+)['\"`]", val_expr)
+                            if val_str_match:
+                                return val_str_match.group(1).strip("/")
+            except Exception:
+                pass
+
+        return ""
+
     def scan(self) -> List[Dict[str, Any]]:
         """Extract all NestJS routes, parameters, DTOs, and response contracts."""
         if not self._parsed:
@@ -349,6 +405,7 @@ class NestJSAdapter(BaseAdapter):
             self._parse_dto_files()
             self._parsed = True
 
+        global_prefix = self._find_global_prefix()
         endpoints = []
         controller_regex = re.compile(r"@Controller\((?:['\"]([^'\"]*)['\"])?\)")
         method_regex = re.compile(r"@(Get|Post|Put|Delete|Patch|Options|Head)\((?:['\"]([^'\"]*)['\"])?\)")
@@ -413,7 +470,19 @@ class NestJSAdapter(BaseAdapter):
 
                                 req_body_schema, params, query = self._parse_signature_params(signature_text)
 
-                                full_path = "/" + "/".join(filter(None, [base_route.strip("/"), sub_path.strip("/")]))
+                                clean_base = base_route.strip("/")
+                                clean_sub = sub_path.strip("/")
+                                clean_global = global_prefix.strip("/")
+
+                                if clean_global:
+                                    if clean_base == clean_global or clean_base.startswith(clean_global + "/"):
+                                        raw_parts = [clean_base, clean_sub]
+                                    else:
+                                        raw_parts = [clean_global, clean_base, clean_sub]
+                                else:
+                                    raw_parts = [clean_base, clean_sub]
+
+                                full_path = "/" + "/".join(filter(None, raw_parts))
                                 
                                 # Response contract
                                 response_schema = self._infer_response_schema(http_verb, func_name, base_route)

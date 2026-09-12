@@ -795,10 +795,165 @@ app.get('/api/v1/health', (req, res) => res.json({ status: 'OK' }));
 
     print("  ✓ agy-tool doc CLI Sandbox Probing tests passed.")
 
+def test_nestjs_global_prefix_discovery():
+    print("[TEST] Testing NestJS Global Prefix Discovery (BUG-003)...")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "package.json"), "w") as f:
+            json.dump({"dependencies": {"@nestjs/core": "^10.0.0", "@nestjs/common": "^10.0.0"}}, f)
+
+        os.makedirs(os.path.join(tmpdir, "src"), exist_ok=True)
+        # 1. main.ts with variable global prefix
+        with open(os.path.join(tmpdir, "src", "main.ts"), "w") as f:
+            f.write("""
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+
+const API_PREFIX = 'api/v1';
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.setGlobalPrefix(API_PREFIX);
+  await app.listen(3000);
+}
+bootstrap();
+""")
+
+        os.makedirs(os.path.join(tmpdir, "src", "modules", "company"), exist_ok=True)
+        with open(os.path.join(tmpdir, "src", "modules", "company", "company.controller.ts"), "w") as f:
+            f.write("""
+import { Controller, Get, Post, Param } from '@nestjs/common';
+
+@Controller('companies')
+export class CompanyController {
+  @Get()
+  async findAll() { return []; }
+
+  @Get(':id')
+  async findOne(@Param('id') id: string) { return { id }; }
+
+  @Post('create')
+  async create() { return { success: true }; }
+}
+""")
+
+        os.makedirs(os.path.join(tmpdir, "src", "modules", "auth"), exist_ok=True)
+        with open(os.path.join(tmpdir, "src", "modules", "auth", "auth.controller.ts"), "w") as f:
+            f.write("""
+import { Controller, Post } from '@nestjs/common';
+
+@Controller('auth')
+export class AuthController {
+  @Post('login')
+  async login() { return { token: 'jwt' }; }
+}
+""")
+
+        # Controller that already has api/v1 prefix
+        os.makedirs(os.path.join(tmpdir, "src", "modules", "health"), exist_ok=True)
+        with open(os.path.join(tmpdir, "src", "modules", "health", "health.controller.ts"), "w") as f:
+            f.write("""
+import { Controller, Get } from '@nestjs/common';
+
+@Controller('api/v1/health')
+export class HealthController {
+  @Get()
+  async check() { return { ok: true }; }
+}
+""")
+
+        adapter = NestJSAdapter(tmpdir)
+        endpoints = adapter.scan()
+
+        paths = {f"{e['method']} {e['path']}" for e in endpoints}
+        assert "GET /api/v1/companies" in paths, "GET /api/v1/companies must exist"
+        assert "GET /api/v1/companies/:id" in paths, "GET /api/v1/companies/:id must exist"
+        assert "POST /api/v1/companies/create" in paths, "POST /api/v1/companies/create must exist"
+        assert "POST /api/v1/auth/login" in paths, "POST /api/v1/auth/login must exist"
+        assert "GET /api/v1/health" in paths, "GET /api/v1/health should not duplicate prefix"
+        assert "GET /api/v1/api/v1/health" not in paths, "No duplicated prefix"
+
+    print("  ✓ NestJS Global Prefix Discovery tests passed (BUG-003 fixed).")
+
+def test_express_router_mount_map():
+    print("[TEST] Testing Express Router Mount Map Discovery (BUG-004)...")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with open(os.path.join(tmpdir, "package.json"), "w") as f:
+            json.dump({"dependencies": {"express": "^4.18.0"}}, f)
+
+        os.makedirs(os.path.join(tmpdir, "src", "routes"), exist_ok=True)
+
+        with open(os.path.join(tmpdir, "src", "server.js"), "w") as f:
+            f.write("""
+const express = require('express');
+const statusRoutes = require('./routes/statusRoutes');
+const authRoutes = require('./routes/authRoutes');
+const sessionRoutes = require('./routes/sessionRoutes');
+
+const app = express();
+app.use('/api/status', statusRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/sessions', sessionRoutes);
+
+app.get('/', (req, res) => {
+  res.json({ status: 'online' });
+});
+
+module.exports = app;
+""")
+
+        with open(os.path.join(tmpdir, "src", "routes", "statusRoutes.js"), "w") as f:
+            f.write("""
+const express = require('express');
+const router = express.Router();
+
+router.get('/', (req, res) => res.json({ status: 'ok' }));
+router.get('/usage', (req, res) => res.json({ usage: '100%' }));
+
+module.exports = router;
+""")
+
+        with open(os.path.join(tmpdir, "src", "routes", "authRoutes.js"), "w") as f:
+            f.write("""
+const express = require('express');
+const router = express.Router();
+
+router.post('/login', (req, res) => res.json({ token: 'jwt' }));
+router.post('/logout', (req, res) => res.json({ ok: true }));
+
+module.exports = router;
+""")
+
+        with open(os.path.join(tmpdir, "src", "routes", "sessionRoutes.js"), "w") as f:
+            f.write("""
+const express = require('express');
+const router = express.Router();
+
+router.get('/', (req, res) => res.json({ sessions: [] }));
+router.get('/:id', (req, res) => res.json({ id: req.params.id }));
+
+module.exports = router;
+""")
+
+        adapter = ExpressAdapter(tmpdir)
+        endpoints = adapter.scan()
+
+        paths = {f"{e['method']} {e['path']}" for e in endpoints}
+        assert "GET /" in paths, "Root GET / must exist"
+        assert "GET /api/status" in paths, "GET /api/status must exist"
+        assert "GET /api/status/usage" in paths, "GET /api/status/usage must exist"
+        assert "POST /api/auth/login" in paths, "POST /api/auth/login must exist"
+        assert "POST /api/auth/logout" in paths, "POST /api/auth/logout must exist"
+        assert "GET /api/sessions" in paths, "GET /api/sessions must exist"
+        assert "GET /api/sessions/:id" in paths, "GET /api/sessions/:id must exist"
+
+    print("  ✓ Express Router Mount Map tests passed (BUG-004 fixed).")
+
 def main():
     test_nestjs_adapter_advanced()
     test_nestjs_dto_multiline_and_exclamation()
+    test_nestjs_global_prefix_discovery()
     test_express_zod_adapter()
+    test_express_router_mount_map()
     test_go_adapter()
     test_laravel_adapter()
     test_api_ignore_and_cache()

@@ -229,53 +229,87 @@ export class CreateCompanyDto {
 
 ## BUG-003 — `nestjs_adapter.py` : `main.ts` dagi Global API Prefix (`app.setGlobalPrefix`) ni inobatga olmaslik
 
-**Holat:** 🔴 Open  
+**Holat:** 🟢 Fixed  
 **Muhimlik:** Medium  
-**Modul:** `agy_tools/adapters/nestjs_adapter.py` → `scan()`  
+**Modul:** `agy_tools/adapters/nestjs_adapter.py` → `_find_global_prefix()`, `scan()`  
 **Aniqlagan:** Core AI Engine (AGY sessiya: `a8b64ff4-d90b-4ac1-9c7c-129824ce21b6`)  
 **Aniqlash sanasi:** 2026-09-12  
-**Tayinlangan:** Lead Teamwork Worker  
+**Tuzatilgan sana:** 2026-09-12  
+**Mas'ul Agent:** Lead Teamwork Worker (`d5d4f06d-e743-40da-922b-d75b1d37bdf0`)  
 
 ---
 
 ### 📋 Tavsif
 
 NestJS loyihalarida `main.ts` ichida ko'pincha `app.setGlobalPrefix('api/v1')` sozlanadi.  
-Hozirgi `nestjs_adapter.py` faqat `@Controller('companies')` ni o'qib, marshrutni `/companies` deb chiqaradi.  
-Natijada tirik serverga `curl http://localhost:4000/companies` qilganda `404 Not Found` qaytadi (haqiqiy tirik yo'l: `/api/v1/companies`).
+Oldingi `nestjs_adapter.py` faqat `@Controller('companies')` ni o'qib, marshrutni `/companies` deb chiqarar edi.  
+Natijada tirik serverga `curl http://localhost:4000/companies` qilganda `404 Not Found` qaytgan (haqiqiy tirik yo'l: `/api/v1/companies`).
 
 ---
 
 ### 🔬 Ildiz Sabab
 
-`nestjs_adapter.py` loyihadagi `main.ts` (yoki `bootstrap`) faylida `app.setGlobalPrefix(...)` e'lon qilinganini qidirmaydi va controller prefiksiga global prefiksni qo'shmaydi.
+`nestjs_adapter.py` loyihadagi `main.ts` (yoki `bootstrap`) faylida `app.setGlobalPrefix(...)` e'lon qilinganini qidirmagan va controller prefiksiga global prefiksni qo'shmagan edi.
 
 ---
 
-### 🧪 Reproduksiya va Curl Testi
+### 🧪 Reproduksiya va Real Loyiha Tekshiruvi
 
 **Real loyiha:** `Loyihalar/zdes_backend/src/main.ts` (`const API_PREFIX = 'api/v1'; app.setGlobalPrefix(API_PREFIX);`)
 
-- `curl -s http://localhost:4000/companies` ➔ `404 Not Found` ❌
-- `curl -s http://localhost:4000/api/v1/auth/login` ➔ `400 Bad Request (Live Handler Answered)` ✅
+**Oldingi Xato Natija:**
+```
+GET /companies
+POST /auth/login
+```
+
+**Yangi To'g'ri Natija:**
+```
+GET /api/v1/companies
+POST /api/v1/auth/login
+```
 
 ---
 
-### ✅ Taklif Qilinayotgan Tuzatish
+### ✅ Amalga Oshirilgan Tuzatish
 
-1. `main.ts` faylini skanerlab, `app.setGlobalPrefix\((?:['"]([^'"]+)['"]|([A-Za-z0-9_]+))\)` va tegishli o'zgaruvchini topish.
-2. Agar global prefix topilsa, barcha endpointlar yo'liga bosh prefiks sifatida qo'shish (masalan `/{global_prefix}/{controller_prefix}/{route}`).
+1. `NestJSAdapter` ga `_find_global_prefix()` metodi qo'shildi:
+   - `main.ts`, `main.js`, `bootstrap.ts`, `app.ts` kabi kirish fayllaridan `app.setGlobalPrefix(...)` chaqiruvini topadi.
+   - String literal (`'api/v1'`), expression fallback (`process.env.API_PREFIX || 'api/v1'`) va o'zgaruvchi deklaratsiyalari (`const API_PREFIX = 'api/v1'`) avtomatik tahlil qilinadi.
+2. `scan()` da controller prefikslari va sub-yo'llar bilan birlashtiriladi (agar controller marshruti allaqachon prefiks bilan boshlangan bo'lsa, takrorlanish oldi olinadi).
+3. `code_tool.py` dagi `scan_nestjs_endpoints()` funksiyasiga ham mos ravishda global prefix tahlili qo'shildi.
+4. `tests/test_doc_tool.py` ga `test_nestjs_global_prefix_discovery` unit testi kiritildi va 100% muvaffaqiyatli o'tdi.
+
+---
+
+### 📦 Ta'sir Doirasi
+
+| Holat | Ta'sir |
+|-------|--------|
+| `app.setGlobalPrefix('api/v1')` mavjud loyihalar | ✅ Barcha marshrutlar boshiga `/api/v1` qo'shiladi |
+| `app.setGlobalPrefix(API_PREFIX)` o'zgaruvchili | ✅ O'zgaruvchi qiymati topilib ulanadi |
+| Global prefix belgilanmagan loyihalar | ✅ Standart controller prefiksi bilan ishlayveradi |
+| `@Controller('api/v1/...')` kabi qo'lda yozilgan yo'llar | ✅ Duplikatsiyasiz `/api/v1/...` saqlanadi |
+
+---
+
+### 📌 Tegishli Fayllar
+
+- [`agy_tools/adapters/nestjs_adapter.py`](../agy_tools/adapters/nestjs_adapter.py) — `_find_global_prefix()` va `scan()` yangilandi
+- [`agy_tools/modules/code_tool.py`](../agy_tools/modules/code_tool.py) — `_find_nestjs_global_prefix()` va `scan_nestjs_endpoints()` yangilandi
+- [`tests/test_doc_tool.py`](../tests/test_doc_tool.py) — `test_nestjs_global_prefix_discovery` qo'shildi
 
 ---
 
 ## BUG-004 — `express_adapter.py` : `server.js` dagi Router Mount Prefikslarini (`app.use('/api/...', router)`) router fayllariga bog'lamaslik
 
-**Holat:** 🔴 Open  
+**Holat:** 🟢 Fixed  
 **Muhimlik:** Medium  
-**Modul:** `agy_tools/adapters/express_adapter.py` → `scan()`  
+**Modul:** `agy_tools/adapters/express_adapter.py` → `_build_router_mount_map()`, `scan()`  
 **Aniqlagan:** Core AI Engine (AGY sessiya: `a8b64ff4-d90b-4ac1-9c7c-129824ce21b6`)  
 **Aniqlash sanasi:** 2026-09-12  
-**Tayinlangan:** Lead Teamwork Worker  
+**Tuzatilgan sana:** 2026-09-12  
+**Mas'ul Agent:** Lead Teamwork Worker (`d5d4f06d-e743-40da-922b-d75b1d37bdf0`)  
 
 ---
 
@@ -285,19 +319,73 @@ Express loyihalarida (masalan `sessiya_connector/backend`) marshrut fayllari `st
 ```javascript
 app.use('/api/status', statusRoutes);
 ```
-Hozirgi `express_adapter.py` faqat `statusRoutes.js` ichidagi `GET /` va `GET /usage` ni o'qiydi.  
-Natijada `curl http://127.0.0.1:15976/usage` qilganda `404` qaytadi (haqiqiy yo'l: `/api/status/usage`).
+Oldingi `express_adapter.py` faqat `statusRoutes.js` ichidagi `GET /` va `GET /usage` ni o'qigan edi.  
+Natijada `curl http://127.0.0.1:15976/usage` qilganda `404` qaytgan (haqiqiy yo'l: `/api/status/usage`).
 
 ---
 
 ### 🔬 Ildiz Sabab
 
-`express_adapter.py` `app.use('prefix', routerImport)` bog'lanishlarini AST/Regex orqali tahlil qilmaydi, har bir faylni alohida mustaqil marshrut deb hisoblaydi.
+`express_adapter.py` `app.use('prefix', routerImport)` bog'lanishlarini tahlil qilmagan, har bir router faylini alohida mustaqil marshrut deb hisoblagan.
 
 ---
 
-### ✅ Taklif Qilinayotgan Tuzatish
+### 🧪 Reproduksiya va Real Loyiha Tekshiruvi
 
-1. Asosiy entrypoint (`server.js`, `app.js`, `index.js`) faylidan `const statusRoutes = require('./routes/statusRoutes')` va `app.use('/api/status', statusRoutes)` xaritasini (Router Mount Map) qurish.
-2. Router fayllarini tahlil qilayotganda tegishli mount prefiksini yo'l boshiga qo'shish.
+**Real loyiha:** `sessiya_connector/backend`
+
+**Oldingi Xato Natija:**
+```
+GET /
+GET /usage
+POST /login
+```
+
+**Yangi To'g'ri Natija:**
+```
+GET /
+GET /api/status
+GET /api/status/usage
+POST /api/auth/login
+GET /api/sessions
+GET /api/approval/pending
+```
+
+---
+
+### ✅ Amalga Oshirilgan Tuzatish
+
+1. `ExpressAdapter` ga `_build_router_mount_map()` metodi qo'shildi:
+   - Loyihadagi kirish va router fayllaridan `const statusRoutes = require('./routes/statusRoutes')` va `import ... from ...` bog'lanishlarini xaritalaydi.
+   - `app.use('/api/status', statusRoutes)` va inline `app.use('/api/status', require('./routes/statusRoutes'))` deklaratsiyalarini tahlil qiladi.
+   - 3-bosqichli ko'p o'tishli (multi-pass) zanjir orqali ichma-ich (nested) router ulanishlarini to'liq qo'llab-quvvatlaydi.
+   - Nisbiy yo'llar va barcha kengaytmalar (`.js`, `.ts`, `.mjs`, `index.js`) uchun alias xaritasini hosil qiladi.
+2. `scan()` da router faylidagi har bir yo'l boshiga mount prefiksi ulanadi.
+3. `code_tool.py` dagi `scan_express_endpoints()` ga ham mos mount xaritasi integratsiya qilindi.
+4. `tests/test_doc_tool.py` ga `test_express_router_mount_map` unit testi kiritildi va 100% muvaffaqiyatli o'tdi.
+
+---
+
+### 📦 Ta'sir Doirasi
+
+| Holat | Ta'sir |
+|-------|--------|
+| `app.use('/api/status', statusRoutes)` kabi Router Mountlar | ✅ `router.get('/usage')` ➔ `/api/status/usage`, `router.get('/')` ➔ `/api/status` |
+| `app.use('/api/auth', require('./auth'))` inline mountlar | ✅ To'g'ri prefiks ulanadi |
+| To'g'ridan-to'g'ri `app.get('/')` (server.js dagi) | ✅ `/` prefikssiz to'g'ri qoladi |
+| Next.js App / Pages router marshrutlari | ✅ Standart `/api/...` marshrutlash saqlanadi |
+
+---
+
+### 📌 Tegishli Fayllar
+
+- [`agy_tools/adapters/express_adapter.py`](../agy_tools/adapters/express_adapter.py) — `_build_router_mount_map()` va `scan()` yangilandi
+- [`agy_tools/modules/code_tool.py`](../agy_tools/modules/code_tool.py) — `_build_express_mount_map()` va `scan_express_endpoints()` yangilandi
+- [`tests/test_doc_tool.py`](../tests/test_doc_tool.py) — `test_express_router_mount_map` qo'shildi
+- [`bugs.md`](./bugs.md) — BUG-003 va BUG-004 yopildi (Fixed)
+
+---
+
+*Hisobot muallifi: Lead Teamwork Worker | Sessiya: `d5d4f06d-e743-40da-922b-d75b1d37bdf0`*
+
 

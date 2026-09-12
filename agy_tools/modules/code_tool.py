@@ -65,9 +65,55 @@ def detect_framework(project_path: str) -> dict:
             
     return info
 
+def _find_nestjs_global_prefix(src_dir: str) -> str:
+    """Discovers global prefix from main.ts / bootstrap files."""
+    candidate_files = [
+        "src/main.ts", "src/main.js", "main.ts", "main.js",
+        "src/bootstrap.ts", "src/bootstrap.js", "src/index.ts", "src/index.js",
+        "src/app.ts", "src/app.js", "src/server.ts", "src/server.js"
+    ]
+    found_files = []
+    for rel in candidate_files:
+        p = os.path.join(src_dir, rel)
+        if os.path.exists(p):
+            found_files.append(p)
+            
+    if not found_files:
+        for root, dirs, files in os.walk(src_dir):
+            dirs[:] = [d for d in dirs if d not in ["node_modules", ".git", "dist", "build", ".next", ".angular"]]
+            for file in files:
+                if file.endswith((".ts", ".js")) and not file.endswith((".dto.ts", ".controller.ts", ".service.ts", ".module.ts", ".spec.ts", ".d.ts")):
+                    found_files.append(os.path.join(root, file))
+
+    for fpath in found_files:
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                content = f.read()
+            match = re.search(r"(?:app|server)\.setGlobalPrefix\s*\(\s*([^,\)]+)", content)
+            if match:
+                raw_arg = match.group(1).strip()
+                str_match = re.match(r"^['\"`]([^'\"`]+)['\"`]$", raw_arg)
+                if str_match:
+                    return str_match.group(1).strip("/")
+                str_in_expr = re.search(r"['\"`]([^'\"`]+)['\"`]", raw_arg)
+                if str_in_expr:
+                    return str_in_expr.group(1).strip("/")
+                var_name = raw_arg.strip()
+                if re.match(r"^[A-Za-z0-9_$]+$", var_name):
+                    var_def = re.search(r"(?:const|let|var)\s+" + re.escape(var_name) + r"\s*=\s*([^;\n]+)", content)
+                    if var_def:
+                        val_expr = var_def.group(1)
+                        val_str_match = re.search(r"['\"`]([^'\"`]+)['\"`]", val_expr)
+                        if val_str_match:
+                            return val_str_match.group(1).strip("/")
+        except Exception:
+            pass
+    return ""
+
 def scan_nestjs_endpoints(src_dir: str) -> list:
     """Scan NestJS controllers using regex pattern matching."""
     endpoints = []
+    global_prefix = _find_nestjs_global_prefix(src_dir)
     controller_regex = re.compile(r"@Controller\((?:['\"]([^'\"]*)['\"])?\)")
     method_regex = re.compile(r"@(Get|Post|Put|Delete|Patch|Options|Head)\((?:['\"]([^'\"]*)['\"])?\)")
     func_regex = re.compile(r"(?:async\s+)?([a-zA-Z0-9_]+)\s*\(")
@@ -106,7 +152,19 @@ def scan_nestjs_endpoints(src_dir: str) -> list:
                                     func_name = f_match.group(1)
                                     break
                             
-                            full_path = "/" + "/".join(filter(None, [base_route.strip("/"), sub_path.strip("/")]))
+                            clean_base = base_route.strip("/")
+                            clean_sub = sub_path.strip("/")
+                            clean_global = global_prefix.strip("/")
+
+                            if clean_global:
+                                if clean_base == clean_global or clean_base.startswith(clean_global + "/"):
+                                    raw_parts = [clean_base, clean_sub]
+                                else:
+                                    raw_parts = [clean_global, clean_base, clean_sub]
+                            else:
+                                raw_parts = [clean_base, clean_sub]
+
+                            full_path = "/" + "/".join(filter(None, raw_parts))
                             endpoints.append({
                                 "method": http_verb,
                                 "path": full_path,
@@ -118,26 +176,126 @@ def scan_nestjs_endpoints(src_dir: str) -> list:
                     pass
     return endpoints
 
+def _build_express_mount_map(src_dir: str) -> dict:
+    """Builds a router mount map for Express code scan."""
+    file_imports = {}
+    raw_mounts = []
+
+    for root, dirs, files in os.walk(src_dir):
+        dirs[:] = [d for d in dirs if d not in ["node_modules", ".git", "dist", "build", ".next", ".angular"]]
+        for file in files:
+            if not file.endswith((".js", ".ts", ".mjs", ".cjs")) or file.endswith(".d.ts"):
+                continue
+            filepath = os.path.join(root, file)
+            rel_file = os.path.normpath(os.path.relpath(filepath, src_dir))
+            file_dir = os.path.dirname(rel_file)
+
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    content = f.read()
+            except Exception:
+                continue
+
+            current_imports = {}
+            req_matches = re.finditer(
+                r"(?:const|let|var)\s+(?:\{\s*(?:[A-Za-z0-9_$]+\s*:\s*)?([A-Za-z0-9_$]+)\s*\}|([A-Za-z0-9_$]+))\s*=\s*require\(\s*['\"`]([^'\"`]+)['\"`]\s*\)",
+                content
+            )
+            for m in req_matches:
+                var_name = m.group(1) or m.group(2)
+                imp_path = m.group(3).strip()
+                if imp_path.startswith("."):
+                    target_rel = os.path.normpath(os.path.join(file_dir, imp_path))
+                    current_imports[var_name] = target_rel
+
+            imp_matches = re.finditer(
+                r"import\s+(?:(?:\*\s+as\s+)?([A-Za-z0-9_$]+)|\{\s*(?:[A-Za-z0-9_$]+\s+as\s+)?([A-Za-z0-9_$]+)\s*\})\s+from\s+['\"`]([^'\"`]+)['\"`]",
+                content
+            )
+            for m in imp_matches:
+                var_name = m.group(1) or m.group(2)
+                imp_path = m.group(3).strip()
+                if imp_path.startswith("."):
+                    target_rel = os.path.normpath(os.path.join(file_dir, imp_path))
+                    current_imports[var_name] = target_rel
+
+            file_imports[rel_file] = current_imports
+
+            use_matches = re.finditer(
+                r"(?:app|router|server)\.use\(\s*['\"`]([^'\"`]+)['\"`]\s*,\s*(.*?)\)",
+                content,
+                re.DOTALL
+            )
+            for m in use_matches:
+                mount_path = m.group(1).strip()
+                args_part = m.group(2)
+                inline_req = re.search(r"require\(\s*['\"`]([^'\"`]+)['\"`]\s*\)", args_part)
+                if inline_req:
+                    imp_path = inline_req.group(1).strip()
+                    if imp_path.startswith("."):
+                        target_rel = os.path.normpath(os.path.join(file_dir, imp_path))
+                        raw_mounts.append((rel_file, mount_path, target_rel))
+                else:
+                    for var_name, target_rel in current_imports.items():
+                        if re.search(rf"\b{re.escape(var_name)}\b", args_part):
+                            raw_mounts.append((rel_file, mount_path, target_rel))
+
+    mount_map = {}
+    def register_aliases(target_rel: str, prefix: str):
+        clean_p = "/" + prefix.strip("/") if prefix.strip("/") else ""
+        norm_tgt = os.path.normpath(target_rel)
+        mount_map[norm_tgt] = clean_p
+        base_no_ext, ext = os.path.splitext(norm_tgt)
+        mount_map[base_no_ext] = clean_p
+        for candidate_ext in [".js", ".ts", ".mjs", ".cjs"]:
+            mount_map[base_no_ext + candidate_ext] = clean_p
+        mount_map[os.path.normpath(os.path.join(norm_tgt, "index.js"))] = clean_p
+        mount_map[os.path.normpath(os.path.join(norm_tgt, "index.ts"))] = clean_p
+        mount_map[os.path.normpath(os.path.join(base_no_ext, "index.js"))] = clean_p
+        mount_map[os.path.normpath(os.path.join(base_no_ext, "index.ts"))] = clean_p
+
+    for _ in range(3):
+        for rel_file, mount_path, target_rel in raw_mounts:
+            parent_prefix = mount_map.get(rel_file, "")
+            combined_prefix = "/" + "/".join(filter(None, [parent_prefix.strip("/"), mount_path.strip("/")]))
+            register_aliases(target_rel, combined_prefix)
+
+    return mount_map
+
 def scan_express_endpoints(src_dir: str) -> list:
     """Scan Express routes."""
     endpoints = []
+    mount_map = _build_express_mount_map(src_dir)
     express_regex = re.compile(r"(?:app|router)\.(get|post|put|delete|patch)\((?:['\"]([^'\"]+)['\"])", re.IGNORECASE)
     
     for root, _, files in os.walk(src_dir):
         if "node_modules" in root or ".git" in root or "dist" in root or ".angular" in root:
             continue
         for file in files:
-            if file.endswith((".js", ".ts")) and not file.endswith(".d.ts"):
+            if file.endswith((".js", ".ts", ".mjs", ".cjs")) and not file.endswith(".d.ts"):
                 filepath = os.path.join(root, file)
                 relpath = os.path.relpath(filepath, src_dir)
+                norm_rel = os.path.normpath(relpath)
+                mount_prefix = mount_map.get(norm_rel, "")
                 try:
                     with open(filepath, "r", encoding="utf-8") as f:
                         for i, line in enumerate(f):
                             m = express_regex.search(line)
                             if m:
+                                route_path = m.group(2)
+                                clean_mount = mount_prefix.strip("/")
+                                clean_route = route_path.strip("/")
+                                if clean_mount:
+                                    if clean_route == clean_mount or clean_route.startswith(clean_mount + "/"):
+                                        full_path = "/" + clean_route
+                                    else:
+                                        full_path = "/" + "/".join(filter(None, [clean_mount, clean_route]))
+                                else:
+                                    full_path = "/" + clean_route
+
                                 endpoints.append({
                                     "method": m.group(1).upper(),
-                                    "path": m.group(2),
+                                    "path": full_path,
                                     "file": relpath,
                                     "line": i + 1
                                 })

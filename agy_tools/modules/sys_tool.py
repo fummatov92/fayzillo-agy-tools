@@ -5,14 +5,20 @@ import subprocess
 import shutil
 from agy_tools.utils import emit_progress, emit_result
 
+from datetime import datetime, timezone
+import json
+from agy_tools.logger import get_logger
+
 def get_sys_describe():
     return {
         "name": "sys",
-        "description": "Server tizim resurslari, Rootless Docker va foydalanuvchi portlarini xavfsiz tekshirish vositasi.",
+        "description": "Server tizim resurslari, Rootless Docker, portlar va audit loglarini boshqarish vositasi.",
         "commands": {
             "status": "Tizim umumiy holati (CPU, RAM, Disk, Uptime)",
             "ports": "Foydalanuvchiga ajratilgan portlar holati (15800-15900)",
-            "docker": "Foydalanuvchi Rootless Docker konteynerlari holati"
+            "docker": "Foydalanuvchi Rootless Docker konteynerlari holati",
+            "last-run": "Oxirgi bajarilgan buyruq va audit natijasi tafsilotlari",
+            "logs": "Tizimdagi barcha bajarilgan operatsiyalar audit jurnali"
         }
     }
 
@@ -138,3 +144,166 @@ def run_sys_docker(args):
         })
     except Exception as e:
         emit_result(None, success=False, error=str(e))
+
+
+def format_elapsed(iso_ts: str) -> str:
+    """Computes human-readable elapsed time string from ISO UTC timestamp."""
+    try:
+        ts = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        diff = (now - ts).total_seconds()
+        if diff < 0:
+            diff = 0
+        if diff < 60:
+            return f"{int(diff)}s ago"
+        elif diff < 3600:
+            m = int(diff // 60)
+            s = int(diff % 60)
+            return f"{m}m {s}s ago"
+        else:
+            h = int(diff // 3600)
+            m = int((diff % 3600) // 60)
+            return f"{h}h {m}m ago"
+    except Exception:
+        return ""
+
+
+def run_sys_last_run(args):
+    """Show details of the last command run from audit log."""
+    logger = get_logger()
+    skip_meta = not getattr(args, "all", False)
+    last_run = logger.get_last_run(skip_meta=skip_meta)
+
+    fmt = getattr(args, "format", "table")
+    if getattr(args, "table", False):
+        fmt = "table"
+
+    if fmt == "json":
+        emit_result(last_run if last_run else {"message": "Hozircha hech qanday log yozuvi topilmadi"}, success=True)
+        return
+
+    # Table format
+    print("=" * 80)
+    print("                    AGY AUDIT LOGGER — LAST RUN DETAILS")
+    print("=" * 80)
+    if not last_run:
+        print("Hozircha hech qanday log yozuvi topilmadi (~/.local/state/agy-tool/runs.jsonl bo'sh).")
+        print("=" * 80)
+        return
+
+    ts_str = last_run.get("timestamp", "")
+    elapsed = format_elapsed(ts_str)
+    ts_display = f"{ts_str} ({elapsed})" if elapsed else ts_str
+
+    print(f"Timestamp       : {ts_display}")
+    print(f"Session ID      : {last_run.get('session_id', 'unknown')}")
+    print(f"Session Path    : {last_run.get('session_path', '') or '-'}")
+    print(f"Caller CWD      : {last_run.get('caller_cwd', '') or '-'}")
+    print(f"Command         : {last_run.get('command', '')}")
+    print(f"Arguments       : {last_run.get('args', [])}")
+    print(f"Status          : {last_run.get('status', 'UNKNOWN')}")
+    print(f"Duration        : {last_run.get('duration_ms', 0)} ms")
+    print(f"Last Checkpoint : {last_run.get('last_checkpoint') or '-'}")
+    print(f"Error Detail    : {last_run.get('error_detail') or 'None'}")
+    print("=" * 80)
+
+
+def run_sys_logs(args):
+    """Query and inspect audit log history with filters and summary stats."""
+    logger = get_logger()
+    limit = getattr(args, "limit", 20) or 20
+    errors_only = getattr(args, "errors_only", False)
+    session_id = getattr(args, "query_session_id", None) or getattr(args, "session_id", None)
+    if session_id == "unknown":
+        session_id = None
+
+    fmt = getattr(args, "format", "table")
+    if getattr(args, "table", False):
+        fmt = "table"
+
+    logs = logger.get_logs(limit=limit, errors_only=errors_only, session_id=session_id)
+
+    # Compute overall statistics from the log file
+    total_in_log = 0
+    all_success = 0
+    all_errors = 0
+    all_timeout = 0
+    all_partial = 0
+    if os.path.exists(logger.log_file):
+        try:
+            with open(logger.log_file, "r", encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        total_in_log += 1
+                        try:
+                            rec = json.loads(line)
+                            st = rec.get("status")
+                            if st == "SUCCESS":
+                                all_success += 1
+                            elif st == "ERROR":
+                                all_errors += 1
+                            elif st == "TIMEOUT":
+                                all_timeout += 1
+                            elif st == "PARTIAL":
+                                all_partial += 1
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+    durations = [r.get("duration_ms", 0) for r in logs if isinstance(r.get("duration_ms"), (int, float))]
+    avg_duration = round(sum(durations) / len(durations), 2) if durations else 0.0
+
+    summary = {
+        "total_in_log": total_in_log,
+        "total_returned": len(logs),
+        "success_count": all_success,
+        "error_count": all_errors,
+        "timeout_count": all_timeout,
+        "partial_count": all_partial,
+        "avg_duration_ms": avg_duration
+    }
+
+    if fmt == "json":
+        emit_result({
+            "summary": summary,
+            "filter": {
+                "limit": limit,
+                "errors_only": errors_only,
+                "session_id": session_id
+            },
+            "logs": logs
+        }, success=True)
+        return
+
+    # Table format
+    print("=" * 110)
+    print("                                      AGY AUDIT LOGS HISTORY")
+    print("=" * 110)
+    print(
+        f"Summary: Total Shown: {len(logs)} | In File: {total_in_log} | "
+        f"Success: {all_success} | Errors: {all_errors} | Other: {all_timeout + all_partial} "
+        f"(Filters: errors_only={errors_only}, session={session_id or 'all'})"
+    )
+    print("-" * 110)
+    print(f"{'TIME (UTC)':<20} | {'STATUS':<8} | {'DURATION':<10} | {'SESSION ID':<20} | {'COMMAND':<20} | {'CHECKPOINT'}")
+    print("-" * 110)
+
+    if not logs:
+        print("Hozircha hech qanday mos keluvchi audit yozuvi topilmadi.")
+    else:
+        for r in logs:
+            ts = str(r.get("timestamp", ""))[:19].replace("T", " ")
+            status = str(r.get("status", ""))[:8]
+            dur = f"{r.get('duration_ms', 0):.1f} ms"
+            sess = str(r.get("session_id", "unknown"))[:20]
+            cmd = str(r.get("command", ""))[:20]
+            chk = str(r.get("last_checkpoint") or "-")[:22]
+            print(f"{ts:<20} | {status:<8} | {dur:>10} | {sess:<20} | {cmd:<20} | {chk}")
+            if r.get("error_detail"):
+                err_str = str(r.get("error_detail")).replace("\n", " ")[:90]
+                print(f"  ↳ Error: {err_str}")
+
+    print("=" * 110)
+

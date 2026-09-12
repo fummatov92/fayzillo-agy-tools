@@ -3,6 +3,7 @@ import sys
 import os
 import argparse
 import json
+import time
 
 # Add parent dir to sys.path to allow module imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -11,7 +12,40 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool
-from agy_tools.utils import emit_result
+from agy_tools.utils import emit_result, set_checkpoint_hook, set_result_hook
+from agy_tools.logger import RunLogger, get_logger
+
+
+def extract_session_flags(argv):
+    """Pre-parses and extracts --session-id and --session-path from any position in sys.argv."""
+    session_id = os.environ.get("AGY_CONVERSATION_ID", "unknown")
+    session_path = os.environ.get("AGY_SESSION_PATH", "")
+    filtered_argv = [argv[0]]
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--session-id":
+            if i + 1 < len(argv):
+                session_id = argv[i + 1]
+                i += 2
+                continue
+        elif arg.startswith("--session-id="):
+            session_id = arg.split("=", 1)[1]
+            i += 1
+            continue
+        elif arg == "--session-path":
+            if i + 1 < len(argv):
+                session_path = argv[i + 1]
+                i += 2
+                continue
+        elif arg.startswith("--session-path="):
+            session_path = arg.split("=", 1)[1]
+            i += 1
+            continue
+        filtered_argv.append(arg)
+        i += 1
+    return filtered_argv, session_id, session_path
+
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -19,83 +53,150 @@ def build_parser():
         description="JarvisOS & AGY Dynamic Autonomous Toolsuite for High-Speed & Token-Efficient Operations."
     )
     parser.add_argument("--describe", action="store_true", help="Return schema and capabilities of all tools in JSON")
-    
+    parser.add_argument("--session-id", help="AGY Conversation / Session ID")
+    parser.add_argument("--session-path", help="AGY Workspace / Session Path")
+
     subparsers = parser.add_subparsers(dest="module", help="Tool modules")
-    
+
     # === SYS MODULE ===
     sys_p = subparsers.add_parser("sys", help="System resources, ports & docker monitoring")
     sys_sub = sys_p.add_subparsers(dest="action")
-    
+
     sys_ports_p = sys_sub.add_parser("ports", help="Scan allocated ports (15800-15900)")
     sys_ports_p.add_argument("--start", dest="start_port", type=int, default=15800)
     sys_ports_p.add_argument("--end", dest="end_port", type=int, default=15900)
-    
+
     sys_sub.add_parser("status", help="Get CPU, RAM and Disk status")
     sys_sub.add_parser("docker", help="Get rootless docker containers status")
-    
+
+    sys_lr = sys_sub.add_parser("last-run", help="Show last executed command audit details")
+    sys_lr.add_argument("--table", action="store_true", help="Display human-readable table format")
+    sys_lr.add_argument("--format", choices=["json", "table"], default="table", help="Output format (default: table)")
+    sys_lr.add_argument("--all", action="store_true", help="Include meta commands (last-run / logs)")
+
+    sys_logs = sys_sub.add_parser("logs", help="Query and inspect audit log history")
+    sys_logs.add_argument("-n", "--limit", type=int, default=20, help="Number of records to show (default: 20)")
+    sys_logs.add_argument("-e", "--errors-only", action="store_true", help="Show only failed / error runs")
+    sys_logs.add_argument("-s", "--session-id", dest="query_session_id", default=None, help="Filter by session ID")
+    sys_logs.add_argument("--table", action="store_true", help="Display human-readable table format")
+    sys_logs.add_argument("--format", choices=["json", "table"], default="table", help="Output format (default: table)")
+
     # === CODE MODULE ===
     code_p = subparsers.add_parser("code", help="AST & architectural blueprints extraction")
     code_sub = code_p.add_subparsers(dest="action")
-    
+
     code_bp = code_sub.add_parser("blueprint", help="Extract high-level file and module map")
     code_bp.add_argument("path", nargs="?", default=".", help="Project path")
-    
+
     code_ep = code_sub.add_parser("endpoints", help="Extract API routes / endpoints")
     code_ep.add_argument("path", nargs="?", default=".", help="Project path")
-    
+
     # === SECURE MODULE ===
     sec_p = subparsers.add_parser("secure", help="Security sanitization and secret masking")
     sec_sub = sec_p.add_subparsers(dest="action")
-    
+
     sec_scan = sec_sub.add_parser("scan", help="Scan files for leaked credentials")
     sec_scan.add_argument("path", help="Target file or directory")
-    
+
     sec_redact = sec_sub.add_parser("redact", help="Redact secrets in place")
     sec_redact.add_argument("path", help="Target file path")
     sec_redact.add_argument("--dry-run", action="store_true", help="Do not overwrite file")
-    
+
     # === DEBUG MODULE ===
     dbg_p = subparsers.add_parser("debug", help="Error log diagnosis, stacktrace parser and typecheck")
     dbg_sub = dbg_p.add_subparsers(dest="action")
-    
+
     dbg_trace = dbg_sub.add_parser("trace", help="Analyze stack trace log")
     dbg_trace.add_argument("log", nargs="?", default="", help="Raw stack trace string or log")
-    
+
     dbg_chk = dbg_sub.add_parser("check", help="Fast syntax / typecheck")
     dbg_chk.add_argument("path", nargs="?", default=".", help="Target project directory")
-    
+
     return parser
 
+
 def main():
+    raw_argv = list(sys.argv)
+    filtered_argv, session_id, session_path = extract_session_flags(raw_argv)
+    caller_cwd = os.environ.get("AGY_CALLER_CWD", os.getcwd())
+
+    logger = get_logger()
+    set_checkpoint_hook(lambda step, pct=None, detail=None: logger.checkpoint(step, pct, detail))
+
+    result_captured = {"success": True, "error": None}
+
+    def on_result(data, success=True, error=None):
+        result_captured["success"] = success
+        result_captured["error"] = error
+        logger.set_result(success, error)
+
+    set_result_hook(on_result)
+
     parser = build_parser()
-    args = parser.parse_args()
-    
-    if args.describe or not args.module:
-        capabilities = {
-            "name": "agy-tool",
-            "version": "1.1.0",
-            "modules": {
-                "sys": sys_tool.get_sys_describe(),
-                "code": code_tool.get_code_describe(),
-                "secure": secure_tool.get_secure_describe(),
-                "debug": debug_tool.get_debug_describe()
-            }
-        }
-        emit_result(capabilities)
-        return
-        
+
     try:
+        args = parser.parse_args(filtered_argv[1:])
+    except SystemExit as se:
+        if se.code != 0:
+            logger.start_run(
+                command="cli_parse_error",
+                args=raw_argv[1:],
+                session_id=session_id,
+                session_path=session_path,
+                caller_cwd=caller_cwd
+            )
+            logger.end_run(status="ERROR", error_detail=f"CLI parse error (exit code {se.code})")
+        sys.exit(se.code)
+
+    # Attach session context to args
+    args.session_id = session_id
+    args.session_path = session_path
+
+    # Determine command
+    if args.describe or not args.module:
+        command = "--describe"
+    else:
+        command = f"{args.module} {getattr(args, 'action', '') or ''}".strip()
+
+    logger.start_run(
+        command=command,
+        args=raw_argv[1:],
+        session_id=session_id,
+        session_path=session_path,
+        caller_cwd=caller_cwd
+    )
+
+    exit_code = 0
+    try:
+        if args.describe or not args.module:
+            capabilities = {
+                "name": "agy-tool",
+                "version": "1.1.0",
+                "modules": {
+                    "sys": sys_tool.get_sys_describe(),
+                    "code": code_tool.get_code_describe(),
+                    "secure": secure_tool.get_secure_describe(),
+                    "debug": debug_tool.get_debug_describe()
+                }
+            }
+            emit_result(capabilities)
+            return
+
         if args.module == "sys":
             if args.action == "ports":
                 sys_tool.run_sys_ports(args)
             elif args.action == "docker":
                 sys_tool.run_sys_docker(args)
+            elif args.action == "last-run":
+                sys_tool.run_sys_last_run(args)
+            elif args.action == "logs":
+                sys_tool.run_sys_logs(args)
             elif args.action == "status" or not args.action:
                 sys_tool.run_sys_status(args)
             else:
                 emit_result(None, success=False, error=f"Noma'lum sys buyrug'i: {args.action}")
-                sys.exit(1)
-                
+                exit_code = 1
+
         elif args.module == "code":
             if args.action == "blueprint":
                 code_tool.run_code_blueprint(args)
@@ -103,8 +204,8 @@ def main():
                 code_tool.run_code_endpoints(args)
             else:
                 emit_result(None, success=False, error=f"Noma'lum code buyrug'i: {args.action}")
-                sys.exit(1)
-                
+                exit_code = 1
+
         elif args.module == "secure":
             if args.action == "scan":
                 secure_tool.run_secure_scan(args)
@@ -112,8 +213,8 @@ def main():
                 secure_tool.run_secure_redact(args)
             else:
                 emit_result(None, success=False, error=f"Noma'lum secure buyrug'i: {args.action}")
-                sys.exit(1)
-                
+                exit_code = 1
+
         elif args.module == "debug":
             if args.action == "trace":
                 debug_tool.run_debug_trace(args)
@@ -121,16 +222,22 @@ def main():
                 debug_tool.run_debug_check(args)
             else:
                 emit_result(None, success=False, error=f"Noma'lum debug buyrug'i: {args.action}")
-                sys.exit(1)
-                
+                exit_code = 1
+
         else:
             emit_result(None, success=False, error=f"Noma'lum modul: {args.module}")
-            sys.exit(1)
-            
+            exit_code = 1
+
     except Exception as e:
+        exit_code = 1
         emit_result(None, success=False, error=str(e))
-        sys.exit(1)
+    finally:
+        status = "ERROR" if (exit_code != 0 or not result_captured["success"]) else "SUCCESS"
+        error_detail = result_captured["error"]
+        logger.end_run(status=status, error_detail=error_detail)
+        if exit_code != 0:
+            sys.exit(exit_code)
+
 
 if __name__ == "__main__":
     main()
-

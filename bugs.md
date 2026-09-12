@@ -6,12 +6,13 @@ Bu fayl loyiha agentlari va ishlab chiquvchilar tomonidan kuzatib boriladigan xa
 
 ## BUG-001 — `code endpoints` : Ko'p qatorli parametrli handler nomini noto'g'ri aniqlash
 
-**Holat:** 🔴 Open  
+**Holat:** 🟢 Fixed  
 **Muhimlik:** Medium  
 **Modul:** `agy_tools/modules/code_tool.py` → `scan_nestjs_endpoints()`  
 **Aniqlagan:** Core AI Engine (AGY sessiya: `a8b64ff4-d90b-4ac1-9c7c-129824ce21b6`)  
 **Aniqlash sanasi:** 2026-09-12  
-**Tayinlangan:** Teamwork Development Agent  
+**Tuzatilgan sana:** 2026-09-12  
+**Mas'ul Agent:** Lead Teamwork Worker (`0d0071d7-17eb-43aa-bcfe-d77d4c83ee92`)  
 
 ---
 
@@ -23,7 +24,7 @@ Bu fayl loyiha agentlari va ishlab chiquvchilar tomonidan kuzatib boriladigan xa
 
 ### 🔬 Ildiz Sabab
 
-`scan_nestjs_endpoints()` funksiyasida `func_regex` quyidagicha ta'riflangan:
+`scan_nestjs_endpoints()` funksiyasida `func_regex` quyidagicha ta'riflangan edi:
 
 ```python
 # Muammoli satr (code_tool.py, ~73-satr):
@@ -53,32 +54,26 @@ async addAllowedUser(        // ← ')' yo'q, keyingi satrlarda
     if (!body || !body.telegramId) {  // ← Regex "if" ni handler nomi deb oladi ❌
 ```
 
-**Natija:**
+**Oldingi Xato Natija:**
 ```json
 { "method": "POST", "path": "/api/allowed-users", "handler": "if" }  ← XATO
 ```
 
-**Kutilgan natija:**
+**Kutilgan va Yangi Natija:**
 ```json
 { "method": "POST", "path": "/api/allowed-users", "handler": "addAllowedUser" }  ← TO'G'RI
 ```
 
 ---
 
-### ✅ Taklif Qilingan Tuzatish
+### ✅ Amalga Oshirilgan Tuzatish
 
-**Yondashuv:** Handler nomini aniqlashda yopuvchi `)` ni **kutmay**, faqat `methodName(` pattern ni izlash yetarli.
-
+1. `func_regex` yopuvchi `)` ni kutmasdan metod nomini ochuvchi qavs bilan izlaydigan qilindi:
 ```python
-# HOZIRGI (xato):
-func_regex = re.compile(r"(?:async\s+)?([a-zA-Z0-9_]+)\s*\(([^)]*)\)")
-
-# TAVSIYA ETILGAN (to'g'ri):
 func_regex = re.compile(r"(?:async\s+)?([a-zA-Z0-9_]+)\s*\(")
 ```
 
-Qo'shimcha shart: `constructor`, `if`, `for`, `while`, `switch` kabi kalit so'zlar **filtrlanishi shart**:
-
+2. Tilning zahiralangan operator/konstruksiyalari (`constructor`, `if`, `for`, `while`, `switch`, `return`, `catch`, `try`) handler nomi sifatida olinishining oldini oluvchi filtr qo'shildi:
 ```python
 RESERVED_WORDS = {"constructor", "if", "for", "while", "switch", "return", "catch", "try"}
 
@@ -87,31 +82,28 @@ if f_match and f_match.group(1) not in RESERVED_WORDS:
     break
 ```
 
+3. `tests/test_audit_logger.py` fayliga regressiya testi (`test_scan_nestjs_endpoints_multiline`) qo'shildi va to'liq testlar muvaffaqiyatli o'tdi.
+4. `install.sh` orqali `~/.local/bin/agy-tool` qayta o'rnatildi va real loyiha (`bot_post_using`) orqali tekshirildi.
+
 ---
 
 ### 📦 Ta'sir Doirasi
 
 | Holat | Ta'sir |
 |-------|--------|
-| Tekis (single-line) parametrli handlerlar | ✅ Ta'sir yo'q |
-| Ko'p qatorli (`@Body()`, `@Param()` dekoratorli) parametrlar | ❌ Noto'g'ri handler nomi |
+| Tekis (single-line) parametrli handlerlar | ✅ To'g'ri ishlaydi |
+| Ko'p qatorli (`@Body()`, `@Param()` dekoratorli) parametrlar | ✅ To'g'ri handler nomi aniqlanadi |
 | `@HttpCode`, `@UseGuards` kabi oraliq dekoratorlar | ✅ To'g'ri skip qilinadi |
-| Express endpointlari | ✅ Ta'sir yo'q (boshqa funksiya) |
+| Express endpointlari | ✅ Ta'sir yo'q (mustaqil skaner) |
 
 ---
 
 ### 📌 Tegishli Fayllar
 
-- [`agy_tools/modules/code_tool.py`](../agy_tools/modules/code_tool.py) — `scan_nestjs_endpoints()`, ~73-satr
-- [`tests/test_audit_logger.py`](../tests/test_audit_logger.py) — Yangi test case qo'shilishi kerak
-- [`rollback.sh`](../rollback.sh) — O'zgarishdan keyin `--dry-run` tasdiqlanishi shart
+- [`agy_tools/modules/code_tool.py`](../agy_tools/modules/code_tool.py) — `scan_nestjs_endpoints()` tuzatildi
+- [`tests/test_audit_logger.py`](../tests/test_audit_logger.py) — `test_scan_nestjs_endpoints_multiline` qo'shildi
+- [`install.sh`](../install.sh) — `~/.local/bin/agy-tool` ga deploy qilindi
 
 ---
 
-### 🔗 Qo'shimcha Kontekst
-
-`ORIGINAL_REQUEST.md` (Follow-up 2026-09-12T12:21:49Z) da `nestjs_adapter.py` uchun ko'p qatorli parametr (DTO, `@Body()`, `@Param()`) to'g'ri parse qilinishi talab qilingan edi. Ushbu bug `doc_tool` loyihasiga o'tishdan oldin `code_tool` da ham tuzatilishi maqsadga muvofiq.
-
----
-
-*Hisobot muallifi: JarvisOS Core AI Engine | Sessiya: `a8b64ff4-d90b-4ac1-9c7c-129824ce21b6`*
+*Hisobot muallifi: Lead Teamwork Worker | Sessiya: `0d0071d7-17eb-43aa-bcfe-d77d4c83ee92`*

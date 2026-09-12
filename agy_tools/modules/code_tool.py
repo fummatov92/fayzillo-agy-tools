@@ -70,7 +70,8 @@ def scan_nestjs_endpoints(src_dir: str) -> list:
     endpoints = []
     controller_regex = re.compile(r"@Controller\((?:['\"]([^'\"]*)['\"])?\)")
     method_regex = re.compile(r"@(Get|Post|Put|Delete|Patch|Options|Head)\((?:['\"]([^'\"]*)['\"])?\)")
-    func_regex = re.compile(r"(?:async\s+)?([a-zA-Z0-9_]+)\s*\(([^)]*)\)")
+    func_regex = re.compile(r"(?:async\s+)?([a-zA-Z0-9_]+)\s*\(")
+    RESERVED_WORDS = {"constructor", "if", "for", "while", "switch", "return", "catch", "try"}
     
     for root, _, files in os.walk(src_dir):
         if "node_modules" in root or ".git" in root or "dist" in root or ".angular" in root:
@@ -101,7 +102,7 @@ def scan_nestjs_endpoints(src_dir: str) -> list:
                                 if trimmed.startswith("@") or trimmed.startswith("//") or not trimmed:
                                     continue
                                 f_match = func_regex.search(next_line)
-                                if f_match:
+                                if f_match and f_match.group(1) not in RESERVED_WORDS:
                                     func_name = f_match.group(1)
                                     break
                             

@@ -392,33 +392,101 @@ GET /api/approval/pending
 
 ## BUG-005 — `debug_tool.py` : `debug check` da `node_modules` yoki `tsc` bo'lmaganda noto'g'ri bo'sh xatolar qaytarish
 
-**Holat:** 🔴 Open  
+**Holat:** 🟢 Fixed  
 **Muhimlik:** Low  
-**Modul:** `agy_tools/modules/debug_tool.py` → `run_debug_check()`  
+**Modul:** `agy_tools/modules/debug_tool.py` → `find_tsc_binary()`, `run_debug_check()`  
 **Aniqlagan:** Core AI Engine (AGY sessiya: `a8b64ff4-d90b-4ac1-9c7c-129824ce21b6`)  
 **Aniqlash sanasi:** 2026-09-12  
-**Tayinlangan:** Lead Teamwork Worker  
+**Tuzatilgan sana:** 2026-09-12  
+**Mas'ul Agent:** Lead Teamwork Worker (`a3061121-b8c5-45fb-9f27-f3f0c81ed890`)  
 
 ---
 
 ### 📋 Tavsif
 
 Agar loyiha jildida `node_modules` o'rnatilmagan bo'lsa (yoki `tsc` global o'rnatilmagan bo'lsa), `npx tsc` buyrug'i `exit code 1` qaytaradi va stdout'da `error TS` bo'lmaydi.  
-`debug_tool.py` bu holatda `status: "Errors Found", error_count: 0, errors: []` qaytaradi.
+`debug_tool.py` bu holatda `status: "Errors Found", error_count: 0, errors: []` qaytarar edi.
 
 ---
 
 ### 🔬 Ildiz Sabab
 
 1. `npx tsc` tsc ni topa olmaganida npm stub paketi matnini chiqaradi va `res.returncode != 0` bo'ladi.
-2. `debug_tool.py` faqat `error TS` qatorlarini filtrlaydi, stderr va compiler topilmagan holatlarni alohida `Compiler Not Found` xatosi sifatida chiqarmaydi.
+2. `debug_tool.py` faqat `error TS` qatorlarini filtrlaydi, stderr va compiler topilmagan holatlarni alohida kompilyator xatosi sifatida qayd etmagan.
+3. Loyihada lokal yoki ota jilddagi `node_modules/.bin/tsc` mavjud bo'lsa ham, faqat shunchaki `npx tsc` ga murojaat qilingan.
 
 ---
 
-### ✅ Taklif Qilinayotgan Tuzatish
+### 🧪 Reproduksiya
 
-1. `node_modules/.bin/tsc` mavjudligini tekshirish, bo'lmasa global `tsc` yoki ota papka `node_modules/.bin/tsc` ni tekshirish.
-2. Agar `res.returncode != 0` va `error_count == 0` bo'lsa, `status: "Compiler Execution Failed"` va `res.stderr` yoki stdout xabarini chiqarish.
+**Oldingi Xato Natija:**
+```json
+{
+  "project_path": "/path/to/project",
+  "checks": [
+    {
+      "type": "TypeScript",
+      "status": "Errors Found",
+      "error_count": 0,
+      "errors": []
+    }
+  ]
+}
+```
+
+**Kutilgan va Yangi To'g'ri Natija:**
+```json
+{
+  "project_path": "/path/to/project",
+  "checks": [
+    {
+      "type": "TypeScript",
+      "status": "Compiler Execution Failed",
+      "compiler": "npx tsc",
+      "error_count": 1,
+      "errors": ["npm ERR! could not determine executable to run"]
+    }
+  ]
+}
+```
+
+---
+
+### ✅ Amalga Oshirilgan Tuzatish
+
+1. `debug_tool.py` ga `find_tsc_binary(target_path)` funksiyasi qo'shildi:
+   - 1) Lokal `target_path/node_modules/.bin/tsc` ni tekshirish.
+   - 2) Ota jildlar (monorepo / parent packages) bo'ylab `node_modules/.bin/tsc` ni rekursiv izlash.
+   - 3) Tizim `PATH` dagi `tsc` (`shutil.which("tsc")`) ni tekshirish.
+   - 4) Oxirgi fallback sifatida `npx tsc` ni ishlatish.
+2. `run_debug_check` da agar `res.returncode != 0` bo'lsa va `error TS` topilmasa, `status: "Compiler Execution Failed"` deb belgilanib, stderr/stdout dagi real xato xabari `errors` ro'yxatida qaytarilishi ta'minlandi.
+3. `tests/test_audit_logger.py` fayliga `test_debug_check_compiler_fallback` unit testi qo'shildi va to'liq testlar 100% muvaffaqiyatli o'tdi.
+4. `install.sh` orqali `~/.local/bin/agy-tool` yangilandi.
+
+---
+
+### 📦 Ta'sir Doirasi
+
+| Holat | Ta'sir |
+|-------|--------|
+| Lokal `node_modules/.bin/tsc` mavjud loyihalar | ✅ To'g'ridan-to'g'ri lokal binary orqali tezkor tahlil |
+| Monorepo / parent `node_modules` loyihalar | ✅ Ota papkadagi binary topilib ishlatiladi |
+| `tsc` yoki `node_modules` o'rnatilmagan loyihalar | ✅ Soxta bo'sh xato o'rniga aniq `Compiler Execution Failed` va sababi qaytadi |
+| Tiplar xatosi mavjud TypeScript loyihalar | ✅ `Errors Found` va aniq xato satrlari saqlanadi |
+| Toza loyihalar | ✅ `Clean (No Type Errors)` to'g'ri qaytadi |
+
+---
+
+### 📌 Tegishli Fayllar
+
+- [`agy_tools/modules/debug_tool.py`](../agy_tools/modules/debug_tool.py) — `find_tsc_binary()` va `run_debug_check()` tuzatildi
+- [`tests/test_audit_logger.py`](../tests/test_audit_logger.py) — `test_debug_check_compiler_fallback` qo'shildi
+- [`bugs.md`](./bugs.md) — BUG-005 yopildi (Fixed)
+
+---
+
+*Hisobot muallifi: Lead Teamwork Worker | Sessiya: `a3061121-b8c5-45fb-9f27-f3f0c81ed890`*
+
 
 
 

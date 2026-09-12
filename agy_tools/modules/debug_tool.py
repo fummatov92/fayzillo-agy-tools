@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import shutil
 import subprocess
 from agy_tools.utils import emit_progress, emit_result, safe_jail_path
 
@@ -109,6 +110,32 @@ def run_debug_trace(args):
         "all_frames": frames[:5]
     })
 
+def find_tsc_binary(target_path: str) -> str:
+    """Find tsc binary in local target node_modules, parent directories, PATH or fallback to npx."""
+    # 1. Local target_path/node_modules/.bin/tsc
+    local_tsc = os.path.join(target_path, "node_modules", ".bin", "tsc")
+    if os.path.isfile(local_tsc) and os.access(local_tsc, os.X_OK):
+        return local_tsc
+
+    # 2. Walk up parent directories looking for node_modules/.bin/tsc
+    curr = os.path.abspath(target_path)
+    while True:
+        parent = os.path.dirname(curr)
+        if not parent or parent == curr:
+            break
+        candidate = os.path.join(parent, "node_modules", ".bin", "tsc")
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+        curr = parent
+
+    # Global or PATH tsc
+    which_tsc = shutil.which("tsc")
+    if which_tsc:
+        return which_tsc
+
+    # 3. Fallback to npx tsc
+    return "npx tsc"
+
 def run_debug_check(args):
     """Run local syntax or compiler check without invoking full builds."""
     emit_progress("Checking Syntax", 30, "Loyiha sintaksisi tekshirilmoqda...")
@@ -120,28 +147,45 @@ def run_debug_check(args):
     tsconfig = os.path.join(target_path, "tsconfig.json")
     if os.path.exists(tsconfig):
         emit_progress("Running TypeCheck", 60, "TypeScript kompilyator tekshiruvi (tsc --noEmit)...")
-        # Try local npx tsc or global tsc
-        cmd = "npx tsc --noEmit --pretty false"
+        tsc_bin = find_tsc_binary(target_path)
+        cmd = f"{tsc_bin} --noEmit --pretty false"
         res = subprocess.run(cmd, shell=True, cwd=target_path, capture_output=True, text=True)
         if res.returncode != 0:
             errors = []
             for line in res.stdout.strip().split("\n"):
                 if "error TS" in line:
                     errors.append(line)
-            results.append({
-                "type": "TypeScript",
-                "status": "Errors Found",
-                "error_count": len(errors),
-                "errors": errors[:15]
-            })
+            
+            if errors:
+                results.append({
+                    "type": "TypeScript",
+                    "status": "Errors Found",
+                    "compiler": tsc_bin,
+                    "error_count": len(errors),
+                    "errors": errors[:15]
+                })
+            else:
+                raw_err = res.stderr.strip() or res.stdout.strip() or "TypeScript compiler command failed to execute."
+                err_lines = [line.strip() for line in raw_err.split("\n") if line.strip()]
+                results.append({
+                    "type": "TypeScript",
+                    "status": "Compiler Execution Failed",
+                    "compiler": tsc_bin,
+                    "error_count": max(1, len(err_lines)),
+                    "errors": err_lines[:15]
+                })
         else:
             results.append({
                 "type": "TypeScript",
-                "status": "Clean (No Type Errors)"
+                "status": "Clean (No Type Errors)",
+                "compiler": tsc_bin
             })
             
     emit_progress("Done", 100, "Tekshiruv yakunlandi.")
-    emit_result({
+    data = {
         "project_path": target_path,
         "checks": results
-    })
+    }
+    emit_result(data)
+    return data
+

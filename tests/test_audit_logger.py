@@ -1,5 +1,12 @@
 import os
 import sys
+
+# Ensure parent dir is in sys.path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
 import json
 import tempfile
 import stat
@@ -194,6 +201,91 @@ export class TestController {
         assert endpoints[0]["handler"] == "createItem", f"Expected createItem, got {endpoints[0]['handler']}"
     print("  ✓ NestJS multi-line endpoints test passed.")
 
+def test_debug_check_compiler_fallback():
+    print("[TEST] Testing debug check compiler binary fallback & error reporting (BUG-005)...")
+    from agy_tools.modules.debug_tool import find_tsc_binary, run_debug_check
+    import types
+    
+    with tempfile.TemporaryDirectory(dir="/home/fayzillo/Desktop") as tmpdir:
+        # 1. Test find_tsc_binary local resolution
+        local_bin_dir = os.path.join(tmpdir, "node_modules", ".bin")
+        os.makedirs(local_bin_dir, exist_ok=True)
+        local_tsc = os.path.join(local_bin_dir, "tsc")
+        with open(local_tsc, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(local_tsc, 0o755)
+        
+        assert find_tsc_binary(tmpdir) == local_tsc
+        
+        # 2. Test find_tsc_binary parent resolution
+        sub_dir = os.path.join(tmpdir, "packages", "core")
+        os.makedirs(sub_dir, exist_ok=True)
+        assert find_tsc_binary(sub_dir) == local_tsc
+        
+        # 3. Test fallback when no local/parent tsc exists
+        clean_sub_dir = os.path.join(tmpdir, "clean_app")
+        os.makedirs(clean_sub_dir, exist_ok=True)
+        os.remove(local_tsc)
+        fallback = find_tsc_binary(clean_sub_dir)
+        assert fallback in ("npx tsc", "/usr/bin/tsc", "/usr/local/bin/tsc") or fallback.endswith("tsc")
+        
+        # 4. Test run_debug_check with mock tsc failing without "error TS"
+        failing_bin_dir = os.path.join(tmpdir, "mock_failing_app", "node_modules", ".bin")
+        os.makedirs(failing_bin_dir, exist_ok=True)
+        mock_failing_app = os.path.join(tmpdir, "mock_failing_app")
+        with open(os.path.join(mock_failing_app, "tsconfig.json"), "w") as f:
+            f.write('{"compilerOptions": {}}\n')
+        mock_failing_tsc = os.path.join(failing_bin_dir, "tsc")
+        with open(mock_failing_tsc, "w") as f:
+            f.write("#!/bin/sh\necho 'npm ERR! could not determine executable' >&2\nexit 1\n")
+        os.chmod(mock_failing_tsc, 0o755)
+        
+        args = types.SimpleNamespace(path=mock_failing_app)
+        res = run_debug_check(args)
+        assert len(res["checks"]) == 1
+        chk = res["checks"][0]
+        assert chk["status"] == "Compiler Execution Failed"
+        assert chk["error_count"] >= 1
+        assert any("could not determine executable" in err for err in chk["errors"])
+        
+        # 5. Test run_debug_check with mock tsc returning TypeScript errors
+        ts_err_bin_dir = os.path.join(tmpdir, "mock_ts_err_app", "node_modules", ".bin")
+        os.makedirs(ts_err_bin_dir, exist_ok=True)
+        mock_ts_err_app = os.path.join(tmpdir, "mock_ts_err_app")
+        with open(os.path.join(mock_ts_err_app, "tsconfig.json"), "w") as f:
+            f.write('{"compilerOptions": {}}\n')
+        mock_ts_tsc = os.path.join(ts_err_bin_dir, "tsc")
+        with open(mock_ts_tsc, "w") as f:
+            f.write("#!/bin/sh\necho 'src/index.ts(1,1): error TS2304: Cannot find name x.'\nexit 1\n")
+        os.chmod(mock_ts_tsc, 0o755)
+        
+        args = types.SimpleNamespace(path=mock_ts_err_app)
+        res = run_debug_check(args)
+        assert len(res["checks"]) == 1
+        chk = res["checks"][0]
+        assert chk["status"] == "Errors Found"
+        assert chk["error_count"] == 1
+        assert "error TS2304" in chk["errors"][0]
+
+        # 6. Test run_debug_check with clean compile
+        clean_bin_dir = os.path.join(tmpdir, "mock_clean_app", "node_modules", ".bin")
+        os.makedirs(clean_bin_dir, exist_ok=True)
+        mock_clean_app = os.path.join(tmpdir, "mock_clean_app")
+        with open(os.path.join(mock_clean_app, "tsconfig.json"), "w") as f:
+            f.write('{"compilerOptions": {}}\n')
+        mock_clean_tsc = os.path.join(clean_bin_dir, "tsc")
+        with open(mock_clean_tsc, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(mock_clean_tsc, 0o755)
+        
+        args = types.SimpleNamespace(path=mock_clean_app)
+        res = run_debug_check(args)
+        assert len(res["checks"]) == 1
+        chk = res["checks"][0]
+        assert chk["status"] == "Clean (No Type Errors)"
+        
+    print("  ✓ Debug check compiler fallback & error reporting tests passed (BUG-005 fixed).")
+
 def main():
     test_sanitization()
     test_permissions_and_rotation()
@@ -201,8 +293,10 @@ def main():
     test_get_last_run_and_logs()
     test_hooks()
     test_scan_nestjs_endpoints_multiline()
+    test_debug_check_compiler_fallback()
     print("🎉 ALL TESTS PASSED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     main()
+
 

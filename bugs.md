@@ -225,3 +225,79 @@ export class CreateCompanyDto {
 
 *Hisobot muallifi: Lead Teamwork Worker | Sessiya: `9f412e22-79b0-4b97-8fc0-92385148675c`*
 
+---
+
+## BUG-003 — `nestjs_adapter.py` : `main.ts` dagi Global API Prefix (`app.setGlobalPrefix`) ni inobatga olmaslik
+
+**Holat:** 🔴 Open  
+**Muhimlik:** Medium  
+**Modul:** `agy_tools/adapters/nestjs_adapter.py` → `scan()`  
+**Aniqlagan:** Core AI Engine (AGY sessiya: `a8b64ff4-d90b-4ac1-9c7c-129824ce21b6`)  
+**Aniqlash sanasi:** 2026-09-12  
+**Tayinlangan:** Lead Teamwork Worker  
+
+---
+
+### 📋 Tavsif
+
+NestJS loyihalarida `main.ts` ichida ko'pincha `app.setGlobalPrefix('api/v1')` sozlanadi.  
+Hozirgi `nestjs_adapter.py` faqat `@Controller('companies')` ni o'qib, marshrutni `/companies` deb chiqaradi.  
+Natijada tirik serverga `curl http://localhost:4000/companies` qilganda `404 Not Found` qaytadi (haqiqiy tirik yo'l: `/api/v1/companies`).
+
+---
+
+### 🔬 Ildiz Sabab
+
+`nestjs_adapter.py` loyihadagi `main.ts` (yoki `bootstrap`) faylida `app.setGlobalPrefix(...)` e'lon qilinganini qidirmaydi va controller prefiksiga global prefiksni qo'shmaydi.
+
+---
+
+### 🧪 Reproduksiya va Curl Testi
+
+**Real loyiha:** `Loyihalar/zdes_backend/src/main.ts` (`const API_PREFIX = 'api/v1'; app.setGlobalPrefix(API_PREFIX);`)
+
+- `curl -s http://localhost:4000/companies` ➔ `404 Not Found` ❌
+- `curl -s http://localhost:4000/api/v1/auth/login` ➔ `400 Bad Request (Live Handler Answered)` ✅
+
+---
+
+### ✅ Taklif Qilinayotgan Tuzatish
+
+1. `main.ts` faylini skanerlab, `app.setGlobalPrefix\((?:['"]([^'"]+)['"]|([A-Za-z0-9_]+))\)` va tegishli o'zgaruvchini topish.
+2. Agar global prefix topilsa, barcha endpointlar yo'liga bosh prefiks sifatida qo'shish (masalan `/{global_prefix}/{controller_prefix}/{route}`).
+
+---
+
+## BUG-004 — `express_adapter.py` : `server.js` dagi Router Mount Prefikslarini (`app.use('/api/...', router)`) router fayllariga bog'lamaslik
+
+**Holat:** 🔴 Open  
+**Muhimlik:** Medium  
+**Modul:** `agy_tools/adapters/express_adapter.py` → `scan()`  
+**Aniqlagan:** Core AI Engine (AGY sessiya: `a8b64ff4-d90b-4ac1-9c7c-129824ce21b6`)  
+**Aniqlash sanasi:** 2026-09-12  
+**Tayinlangan:** Lead Teamwork Worker  
+
+---
+
+### 📋 Tavsif
+
+Express loyihalarida (masalan `sessiya_connector/backend`) marshrut fayllari `statusRoutes.js` da `router.get('/', ...)` va `router.get('/usage', ...)` deb yoziladi va `server.js` da quyidagicha ulanadi:
+```javascript
+app.use('/api/status', statusRoutes);
+```
+Hozirgi `express_adapter.py` faqat `statusRoutes.js` ichidagi `GET /` va `GET /usage` ni o'qiydi.  
+Natijada `curl http://127.0.0.1:15976/usage` qilganda `404` qaytadi (haqiqiy yo'l: `/api/status/usage`).
+
+---
+
+### 🔬 Ildiz Sabab
+
+`express_adapter.py` `app.use('prefix', routerImport)` bog'lanishlarini AST/Regex orqali tahlil qilmaydi, har bir faylni alohida mustaqil marshrut deb hisoblaydi.
+
+---
+
+### ✅ Taklif Qilinayotgan Tuzatish
+
+1. Asosiy entrypoint (`server.js`, `app.js`, `index.js`) faylidan `const statusRoutes = require('./routes/statusRoutes')` va `app.use('/api/status', statusRoutes)` xaritasini (Router Mount Map) qurish.
+2. Router fayllarini tahlil qilayotganda tegishli mount prefiksini yo'l boshiga qo'shish.
+

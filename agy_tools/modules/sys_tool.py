@@ -15,6 +15,7 @@ def get_sys_describe():
         "description": "Server tizim resurslari, Rootless Docker, portlar va audit loglarini boshqarish vositasi.",
         "commands": {
             "status": "Tizim umumiy holati (CPU, RAM, Disk, Uptime)",
+            "storage": "Disk hajmi taqsimoti va jildlar bo'yicha bandlik tahlili",
             "ports": "Foydalanuvchiga ajratilgan portlar holati (15800-15900)",
             "docker": "Foydalanuvchi Rootless Docker konteynerlari holati",
             "last-run": "Oxirgi bajarilgan buyruq va audit natijasi tafsilotlari",
@@ -306,4 +307,80 @@ def run_sys_logs(args):
                 print(f"  ↳ Error: {err_str}")
 
     print("=" * 110)
+
+def format_bytes(size: int) -> str:
+    """Format bytes to human readable string."""
+    if size >= 1024 * 1024 * 1024:
+        return f"{size / (1024 * 1024 * 1024):.2f} GB"
+    elif size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.2f} MB"
+    elif size >= 1024:
+        return f"{size / 1024:.2f} KB"
+    return f"{size} B"
+
+def get_dir_size_fast(path: str) -> int:
+    """Calculate directory or file size safely."""
+    total = 0
+    try:
+        if os.path.isfile(path) or os.path.islink(path):
+            return os.path.getsize(path)
+        for root, dirs, files in os.walk(path):
+            for f in files:
+                fp = os.path.join(root, f)
+                try:
+                    if not os.path.islink(fp):
+                        total += os.path.getsize(fp)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return total
+
+def run_sys_storage(args):
+    """Analyze storage distribution of a directory or server partition."""
+    emit_progress("Analyzing Storage", 20, "Disk taqsimoti skanerlanmoqda...")
+    raw_path = getattr(args, "path", None) or "/home/fayzillo/Desktop"
+    top_n = getattr(args, "top", 10) or 10
+
+    target_path = os.path.abspath(os.path.expanduser(raw_path))
+    if not os.path.exists(target_path):
+        emit_result(None, success=False, error=f"Yo'l topilmadi: {target_path}")
+        return
+
+    emit_progress("Scanning Subdirectories", 50, f"{target_path} tarkibi o'lchanmoqda...")
+    breakdown = []
+    total_size = 0
+
+    try:
+        entries = os.listdir(target_path)
+    except Exception as e:
+        emit_result(None, success=False, error=f"Papkani o'qib bo'lmadi: {str(e)}")
+        return
+
+    for entry in entries:
+        entry_path = os.path.join(target_path, entry)
+        sz = get_dir_size_fast(entry_path)
+        total_size += sz
+        breakdown.append({
+            "name": entry,
+            "path": entry_path,
+            "is_dir": os.path.isdir(entry_path),
+            "size_bytes": sz,
+            "size_formatted": format_bytes(sz)
+        })
+
+    # Sort descending
+    breakdown.sort(key=lambda x: x["size_bytes"], reverse=True)
+    for item in breakdown:
+        item["percent"] = round((item["size_bytes"] / total_size * 100), 1) if total_size > 0 else 0
+
+    emit_progress("Done", 100, f"Disk taqsimoti tayyor ({len(breakdown)} ta element).")
+    emit_result({
+        "target_path": target_path,
+        "total_size_bytes": total_size,
+        "total_size_formatted": format_bytes(total_size),
+        "total_entries_count": len(breakdown),
+        "top_items": breakdown[:top_n]
+    })
+
 

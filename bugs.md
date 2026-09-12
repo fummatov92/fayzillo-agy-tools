@@ -388,4 +388,37 @@ GET /api/approval/pending
 
 *Hisobot muallifi: Lead Teamwork Worker | Sessiya: `d5d4f06d-e743-40da-922b-d75b1d37bdf0`*
 
+---
+
+## BUG-005 — `debug_tool.py` : `debug check` da `node_modules` yoki `tsc` bo'lmaganda noto'g'ri bo'sh xatolar qaytarish
+
+**Holat:** 🔴 Open  
+**Muhimlik:** Low  
+**Modul:** `agy_tools/modules/debug_tool.py` → `run_debug_check()`  
+**Aniqlagan:** Core AI Engine (AGY sessiya: `a8b64ff4-d90b-4ac1-9c7c-129824ce21b6`)  
+**Aniqlash sanasi:** 2026-09-12  
+**Tayinlangan:** Lead Teamwork Worker  
+
+---
+
+### 📋 Tavsif
+
+Agar loyiha jildida `node_modules` o'rnatilmagan bo'lsa (yoki `tsc` global o'rnatilmagan bo'lsa), `npx tsc` buyrug'i `exit code 1` qaytaradi va stdout'da `error TS` bo'lmaydi.  
+`debug_tool.py` bu holatda `status: "Errors Found", error_count: 0, errors: []` qaytaradi.
+
+---
+
+### 🔬 Ildiz Sabab
+
+1. `npx tsc` tsc ni topa olmaganida npm stub paketi matnini chiqaradi va `res.returncode != 0` bo'ladi.
+2. `debug_tool.py` faqat `error TS` qatorlarini filtrlaydi, stderr va compiler topilmagan holatlarni alohida `Compiler Not Found` xatosi sifatida chiqarmaydi.
+
+---
+
+### ✅ Taklif Qilinayotgan Tuzatish
+
+1. `node_modules/.bin/tsc` mavjudligini tekshirish, bo'lmasa global `tsc` yoki ota papka `node_modules/.bin/tsc` ni tekshirish.
+2. Agar `res.returncode != 0` va `error_count == 0` bo'lsa, `status: "Compiler Execution Failed"` va `res.stderr` yoki stdout xabarini chiqarish.
+
+
 

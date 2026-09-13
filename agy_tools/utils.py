@@ -56,8 +56,10 @@ def safe_jail_path(path: str, base_dir: str = None) -> str:
     
     desktop_dir = os.path.realpath("/home/fayzillo/Desktop")
     local_dir = os.path.realpath(os.path.expanduser("~/.local"))
+    gemini_dir = os.path.realpath(os.path.expanduser("~/.gemini/antigravity-cli"))
+    brains_dir = os.path.realpath(os.path.expanduser("~/Downloads/brains"))
     
-    allowed_dirs = [desktop_dir, local_dir]
+    allowed_dirs = [desktop_dir, local_dir, gemini_dir, brains_dir]
     if base_dir:
         allowed_dirs.append(os.path.realpath(os.path.abspath(os.path.expanduser(base_dir))))
         

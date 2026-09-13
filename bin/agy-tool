@@ -11,7 +11,7 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool, doc_tool, media_tool, session_tool
+from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool, doc_tool, media_tool, session_tool, super_media_tool
 from agy_tools.utils import emit_result, set_checkpoint_hook, set_result_hook
 from agy_tools.logger import RunLogger, get_logger
 
@@ -203,11 +203,34 @@ def build_parser():
     sess_qry.add_argument("query", help="Keyword or phrase to search")
     sess_qry.add_argument("--format", choices=["table", "json"], default="table", help="Output format")
 
-    sess_exp = sess_sub.add_parser("export", help="Export sanitized session dialogue to Markdown or JSON")
-    sess_exp.add_argument("session_id_arg", help="Target session ID")
-    sess_exp.add_argument("-o", "--output", help="Output file path (default: ~/Desktop/agy_tasks/exports/session_<id>.md)")
-    sess_exp.add_argument("--format", choices=["md", "json"], default="md", help="Export format")
-    sess_exp.add_argument("--no-redact", action="store_true", help="Do not mask sensitive credentials")
+    # === SUPER-MEDIA MODULE ===
+    smed_p = subparsers.add_parser("super-media", aliases=["super_media"], help="Super Media Intelligence (Video reducer & timeline sync, categorized archive, pipeline)")
+    smed_sub = smed_p.add_subparsers(dest="action")
+
+    # video
+    smed_vid = smed_sub.add_parser("video", help="Video Intelligent Reducer (<12%% dHash) & Audio-Visual Timeline Sync")
+    smed_vid.add_argument("path", help="Video file path")
+    smed_vid.add_argument("--interval", default="1s", help="Frame sampling interval (e.g. 1s, 0.5s, 2s)")
+    smed_vid.add_argument("--threshold", type=float, default=0.12, help="Perceptual dHash difference threshold (default: 0.12)")
+    smed_vid.add_argument("--compact", action="store_true", help="Compact timeline summary")
+    smed_vid.add_argument("--format", choices=["json", "table"], default="json", help="Output format (json or table)")
+    smed_vid.add_argument("--language", default="uz-UZ", help="STT target language (default: uz-UZ)")
+    smed_vid.add_argument("--no-transcribe", dest="transcribe", action="store_false", help="Skip STT transcription")
+    smed_vid.add_argument("--max-frames", type=int, default=100, help="Maximum initial frames to extract")
+    smed_vid.add_argument("--output-dir", help="Output directory for super media artifacts")
+
+    # archive
+    smed_arc = smed_sub.add_parser("archive", help="Smart Categorized Archive Pipeline (0-Token Blueprint & 5 categories)")
+    smed_arc.add_argument("path", help="Archive file path (.zip, .tar, .tar.gz, etc.)")
+    smed_arc.add_argument("--compact", action="store_true", help="Compact category summary")
+    smed_arc.add_argument("--format", choices=["json", "table"], default="json", help="Output format (json or table)")
+
+    # pipeline
+    smed_pip = smed_sub.add_parser("pipeline", help="Super Multimodal Pipeline (auto detects media type)")
+    smed_pip.add_argument("path", help="Target media/archive file path")
+    smed_pip.add_argument("--compact", action="store_true", help="Compact pipeline summary")
+    smed_pip.add_argument("--format", choices=["json", "table"], default="json", help="Output format (json or table)")
+    smed_pip.add_argument("--output-dir", help="Output directory for pipeline artifacts")
 
     return parser
 
@@ -276,7 +299,8 @@ def main():
                     "debug": debug_tool.get_debug_describe(),
                     "doc": doc_tool.get_doc_describe(),
                     "media": media_tool.get_media_describe(),
-                    "session": session_tool.get_session_describe()
+                    "session": session_tool.get_session_describe(),
+                    "super_media": super_media_tool.get_super_media_describe()
                 }
             }
             emit_result(capabilities)
@@ -367,6 +391,21 @@ def main():
                     media_tool.run_pipeline(args)
                 else:
                     emit_result(None, success=False, error=f"Noma'lum media buyrug'i: {args.action}")
+                    exit_code = 1
+
+        elif args.module in ["super-media", "super_media"]:
+            if args.action == "video":
+                super_media_tool.run_super_video(args)
+            elif args.action == "archive":
+                super_media_tool.run_super_archive(args)
+            elif args.action == "pipeline" or not args.action:
+                super_media_tool.run_super_pipeline(args)
+            else:
+                if os.path.exists(args.action):
+                    args.path = args.action
+                    super_media_tool.run_super_pipeline(args)
+                else:
+                    emit_result(None, success=False, error=f"Noma'lum super-media buyrug'i: {args.action}")
                     exit_code = 1
 
         else:

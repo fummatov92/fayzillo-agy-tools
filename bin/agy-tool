@@ -232,10 +232,15 @@ def build_parser():
     face_enr = face_sub.add_parser("enroll", help="Enroll a person's face embedding into biometric DB")
     face_enr.add_argument("name", help="Name of the person")
     face_enr.add_argument("path", help="Image file path containing the face")
+    face_enr.add_argument("--consent-confirmed", action="store_true", help="Explicit consent confirmation under privacy regulations")
 
     face_enr_vid = face_sub.add_parser("enroll-video", help="Enroll 180-degree multi-angle vectors from video note/MP4")
     face_enr_vid.add_argument("name", help="Name of the person")
     face_enr_vid.add_argument("path", help="Video file path containing head rotation")
+    face_enr_vid.add_argument("--consent-confirmed", action="store_true", help="Explicit consent confirmation under privacy regulations")
+
+    face_forg = face_sub.add_parser("forget", help="Right to be forgotten: purge a person's biometric vectors")
+    face_forg.add_argument("name", help="Name of the person to forget")
 
     face_id = face_sub.add_parser("identify", help="Detect and identify all faces in image")
     face_id.add_argument("path", help="Image file path to identify")
@@ -246,6 +251,8 @@ def build_parser():
 
     face_vid = face_sub.add_parser("video", help="Scan video/video notes and track identified faces")
     face_vid.add_argument("path", help="Video file path")
+    face_vid.add_argument("--allow-multi-identity", action="store_true", help="Allow identifying non-owner faces in video")
+    face_vid.add_argument("--owner-name", help="Target owner name to verify in owner-only mode")
 
     face_ls = face_sub.add_parser("list", help="List all enrolled people in database")
 
@@ -431,15 +438,28 @@ def main():
 
         elif args.module == "face":
             if args.action == "enroll":
-                face_tool.run_face_enroll([args.name, args.path])
+                face_args = [args.name, args.path]
+                if getattr(args, "consent_confirmed", False):
+                    face_args.append("--consent-confirmed")
+                face_tool.run_face_enroll(face_args)
             elif args.action == "enroll-video":
-                face_tool.run_face_enroll_video([args.name, args.path])
+                face_args = [args.name, args.path]
+                if getattr(args, "consent_confirmed", False):
+                    face_args.append("--consent-confirmed")
+                face_tool.run_face_enroll_video(face_args)
+            elif args.action == "forget":
+                face_tool.run_face_forget([args.name])
             elif args.action == "identify":
                 face_tool.run_face_identify([args.path])
             elif args.action == "verify":
                 face_tool.run_face_verify([args.path, args.name])
             elif args.action == "video":
-                face_tool.run_face_video([args.path])
+                face_args = [args.path]
+                if getattr(args, "allow_multi_identity", False):
+                    face_args.append("--allow-multi-identity")
+                if getattr(args, "owner_name", None):
+                    face_args.extend(["--owner-name", args.owner_name])
+                face_tool.run_face_video(face_args)
             elif args.action == "list" or not args.action:
                 face_tool.run_face_list([])
             elif args.action == "benchmark":

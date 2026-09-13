@@ -275,30 +275,43 @@ agy-tool session export <session_id>
 
 ---
 
-### 9. `face` — Ultra-Yengil Biometrik Yuz Tanish (0-Token, CPU-Only)
+### 9. `face` — Ultra-Yengil Biometrik Yuz Tanish (0-Token, CPU-Only & Privacy Guard)
 
 **UltraFace (1.2MB)** va **MobileFaceNet ONNX (13MB)** neyrotarmoqlari asosidagi, oddiy CPU'da **~58 ms**da 512 o'lchamli biometrik vektor chiqaruvchi, **0 token sarflaydigan** va 100% offline ishlaydigan biometrik yuz tanish moduli.
 
+#### ⚖️ Maxfiylik va Huquqiy Ogohlantirish (Privacy & Legal Notice):
+> [!IMPORTANT]
+> Biometrik ma'lumotlar shaxsga doir maxfiy ma'lumotlar toifasiga kiradi. Ushbu modul O'zbekiston Respublikasining **"Shaxsga doir ma'lumotlar to'g'risida"gi Qonuni (O'RQ-547)** va xalqaro **GDPR** talablariga to'liq moslashtirilgan:
+> 1. **Shifrlangan Saqlash (At-Rest Encryption):** Barcha biometrik embeddinglar `faces_db.enc` faylida Fernet (AES-128-CBC + HMAC-SHA256) bilan shifrlanadi va ruxsatlar `0600` bilan cheklanadi.
+> 2. **Majburiy Rozilik (--consent-confirmed):** Biometrik ro'yxatga olish (`enroll`, `enroll-video`) faqat subyektning aniq roziligi tasdiqlanganda amalga oshiriladi.
+> 3. **Unutilish Huquqi (Right to be Forgotten):** Foydalanuvchi ma'lumotlarini bazadan butunlay o'chirish (`forget`) imkoniyati mavjud.
+> 4. **Privacy-by-Default (Owner-Only Mode):** Video skanerlashda sukut bo'yicha faqat tizim egasi tasdiqlanadi, boshqa begona shaxslarning yuzlari `unknown_person` sifatida niqoblanadi (identifikatsiyasi oshkor qilinmaydi).
+
 ```bash
-# 1. Shaxs yuzini biometrik bazaga ro'yxatga olish (Vector Enrollment)
-agy-tool face enroll "Fayzillo Ummatov" /yo'l/fayzillo.jpg
+# 1. Shaxs yuzini biometrik bazaga ro'yxatga olish (Rozilik bilan va Shifrlangan)
+agy-tool face enroll "Fayzillo Ummatov" /yo'l/fayzillo.jpg --consent-confirmed
 
-# 2. 180° video orqali ko'p burchakli (Multi-Angle) 3D biometrik profil yaratish
-agy-tool face enroll-video "Fayzillo Ummatov" /yo'l/head_rotation.mp4
+# 2. 180° video orqali ko'p burchakli (Multi-Angle) biometrik profil yaratish
+agy-tool face enroll-video "Fayzillo Ummatov" /yo'l/head_rotation.mp4 --consent-confirmed
 
-# 3. Rasm ichidagi barcha yuzlarni aniqlash va bazadagi shaxslar bilan taqqoslash
+# 3. Rasm ichidagi yuzlarni aniqlash va shifrlangan bazadan taqqoslash
 agy-tool face identify /yo'l/noma'lum_rasm.jpg
 
 # 4. Kadr ko'rsatilgan shaxsga tegishli ekanligini verifikatsiya qilish
 agy-tool face verify /yo'l/kadr.jpg "Fayzillo Ummatov"
 
-# 5. Telegram video xabarlari (doiracha / MP4) ichidan yuzlarni skanerlash
+# 5. Telegram video xabarlarini skanerlash (Privacy Guard: sukut bo'yicha faqat Owner tekshiriladi)
 agy-tool face video /yo'l/video_note.mp4
+# Barcha shaxslarni aniqlashga ruxsat berish (Multi-Identity Mode)
+agy-tool face video /yo'l/video_note.mp4 --allow-multi-identity
 
-# 6. Ro'yxatdan o'tgan shaxslar bazasini ko'rish
+# 6. Unutilish huquqi (Right to be forgotten) — shaxs biometriyasini bazadan o'chirish
+agy-tool face forget "Fayzillo Ummatov"
+
+# 7. Ro'yxatdan o'tgan shaxslar bazasini ko'rish (shifrlangan holatda)
 agy-tool face list
 
-# 7. CPU tezligi, RAM sarfi va FPS samaradorligini o'lchash (Benchmark)
+# 8. CPU tezligi, RAM sarfi va FPS samaradorligini o'lchash (Benchmark)
 agy-tool face benchmark /yo'l/foto.jpg
 ```
 

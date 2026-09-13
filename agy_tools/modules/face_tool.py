@@ -5,6 +5,7 @@ import time
 import subprocess
 import tempfile
 import statistics
+import base64
 import numpy as np
 from PIL import Image
 
@@ -13,29 +14,77 @@ try:
 except ImportError:
     ort = None
 
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+except ImportError:
+    Fernet = None
+
 from agy_tools.utils import emit_progress, emit_result, safe_jail_path
 
 APP_DATA_DIR = os.path.expanduser("~/.gemini/antigravity-cli")
-DEFAULT_DB_PATH = os.path.join(APP_DATA_DIR, "faces_db.json")
+DEFAULT_DB_PATH = os.path.join(APP_DATA_DIR, "faces_db.enc")
+LEGACY_DB_PATH = os.path.join(APP_DATA_DIR, "faces_db.json")
+KEY_FILE_PATH = os.path.join(APP_DATA_DIR, ".face_key")
+
+def get_or_create_encryption_key(key_path: str = None) -> bytes:
+    """
+    Retrieves or generates a secure Fernet symmetric encryption key for biometric data.
+    Priority:
+      1. AGY_BIOMETRIC_SECRET env var (derived via PBKDF2)
+      2. Key file on disk (~/.gemini/antigravity-cli/.face_key with chmod 0600)
+    """
+    if Fernet is None:
+        raise RuntimeError("cryptography kutubxonasi o'rnatilmagan. Iltimos: pip install cryptography")
+        
+    env_secret = os.environ.get("AGY_BIOMETRIC_SECRET")
+    if env_secret:
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=b"agy_biometric_salt_fixed_v1",
+            iterations=100000,
+        )
+        return base64.urlsafe_b64encode(kdf.derive(env_secret.encode()))
+
+    target_key_file = key_path or KEY_FILE_PATH
+    if os.path.exists(target_key_file):
+        with open(target_key_file, "rb") as f:
+            return f.read().strip()
+    else:
+        os.makedirs(os.path.dirname(target_key_file), exist_ok=True)
+        key = Fernet.generate_key()
+        with open(target_key_file, "wb") as f:
+            f.write(key)
+        try:
+            os.chmod(target_key_file, 0o600)
+        except Exception:
+            pass
+        return key
 
 def get_face_describe():
     return {
         "name": "face",
-        "description": "Ultra-yengil CPU-only biometrik yuz tanish (MobileFaceNet ONNX) vositasi (0-token, offline).",
+        "description": "Shifrlangan, consent-nazoratli, ultra-yengil CPU biometrik yuz tanish (MobileFaceNet ONNX) vositasi.",
         "commands": {
-            "enroll": "Shaxs yuzini biometrik bazaga ro'yxatga olish (512-d vektor embedding)",
-            "identify": "Rasm yoki kadr ichidagi yuzlarni aniqlash va bazadagi shaxslar bilan taqqoslash",
-            "verify": "Kadr ko'rsatilgan shaxsga tegishli ekanligini tekshirish",
-            "video": "Telegram video xabarlari (doiracha / MP4) ichidan yuzlarni skanerlash va tanish",
+            "enroll": "Shaxs yuzini shifrlangan biometrik bazaga ro'yxatga olish (--consent-confirmed talab etiladi)",
+            "enroll-video": "180° video orqali ko'p burchakli 3D biometrik profil yaratish (--consent-confirmed talab etiladi)",
+            "identify": "Rasm yoki kadr ichidagi yuzlarni aniqlash va shifrlangan bazadagi shaxslar bilan taqqoslash",
+            "verify": "Kadr ko'rsatilgan shaxsga tegishli ekanligini verifikatsiya qilish",
+            "video": "Telegram video xabarlari ichidan yuzlarni skanerlash (default: --owner-only maxfiylik rejimi)",
+            "forget": "Shaxsning barcha biometrik embeddinglarini bazadan butunlay o'chirish (unutilish huquqi)",
             "list": "Biometrik bazada saqlangan shaxslar ro'yxatini ko'rish",
             "benchmark": "CPU tezligi, RAM sarfi va FPS samaradorligini o'lchash"
         }
     }
 
 class FacePipeline:
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str = None, key_path: str = None):
         if ort is None:
             raise RuntimeError("onnxruntime kutubxonasi o'rnatilmagan. Iltimos: pip install onnxruntime")
+        if Fernet is None:
+            raise RuntimeError("cryptography kutubxonasi o'rnatilmagan. Iltimos: pip install cryptography")
             
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.models_dir = os.path.join(base_dir, "models")
@@ -44,11 +93,13 @@ class FacePipeline:
         self.emb_model_path = os.path.join(self.models_dir, "w600k_mbf.onnx")
         
         self.db_path = db_path or DEFAULT_DB_PATH
+        self.key_path = key_path or KEY_FILE_PATH
+        self.fernet = Fernet(get_or_create_encryption_key(self.key_path))
+        
         self.conf_threshold = 0.7
         self.iou_threshold = 0.4
         self.match_threshold = 0.55
         
-        # Load ONNX sessions with 1 thread for CPU safety
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 1
         opts.inter_op_num_threads = 1
@@ -64,18 +115,43 @@ class FacePipeline:
         self.db = self._load_db()
 
     def _load_db(self):
+        # 1. Check encrypted db path
         if os.path.exists(self.db_path):
             try:
-                with open(self.db_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                with open(self.db_path, "rb") as f:
+                    encrypted_data = f.read()
+                decrypted = self.fernet.decrypt(encrypted_data)
+                return json.loads(decrypted.decode("utf-8"))
             except Exception:
                 return {}
+
+        # 2. Migration from legacy unencrypted json if present
+        legacy_path = self.db_path.replace(".enc", ".json")
+        if os.path.exists(legacy_path):
+            try:
+                with open(legacy_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                # Encrypt and save to .enc
+                self.db = data
+                self._save_db()
+                # Securely remove plain-text legacy json
+                os.remove(legacy_path)
+                return data
+            except Exception:
+                return {}
+
         return {}
 
     def _save_db(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        with open(self.db_path, "w", encoding="utf-8") as f:
-            json.dump(self.db, f, indent=2, ensure_ascii=False)
+        raw_json = json.dumps(self.db, ensure_ascii=False).encode("utf-8")
+        encrypted_data = self.fernet.encrypt(raw_json)
+        with open(self.db_path, "wb") as f:
+            f.write(encrypted_data)
+        try:
+            os.chmod(self.db_path, 0o600)
+        except Exception:
+            pass
 
     def _iou(self, box1, box2):
         x1 = max(box1[0], box2[0])
@@ -171,7 +247,10 @@ class FacePipeline:
     def cosine_similarity(self, emb1: np.ndarray, emb2: np.ndarray) -> float:
         return float(np.dot(emb1, emb2))
 
-    def enroll(self, name: str, image_path: str):
+    def enroll(self, name: str, image_path: str, consent_confirmed: bool = False):
+        if not consent_confirmed:
+            raise PermissionError("Xavfsizlik talabi: Ushbu shaxsning biometrik ma'lumotlarini qayta ishlashga roziligi olinganini tasdiqlang: --consent-confirmed")
+
         safe_path = safe_jail_path(image_path)
         img = Image.open(safe_path).convert("RGB")
         faces = self.detect_faces(img)
@@ -200,15 +279,16 @@ class FacePipeline:
             "name": name,
             "samples_count": len(self.db[name]),
             "detection_score": score,
-            "box": box
+            "box": box,
+            "encrypted": True
         }
 
-    def enroll_video(self, name: str, video_path: str, max_samples: int = 8, min_diff_threshold: float = 0.15):
-        """
-        Samples video across 180-degree sweep and extracts unique facial angle vectors.
-        """
+    def enroll_video(self, name: str, video_path: str, consent_confirmed: bool = False, max_samples: int = 8, min_diff_threshold: float = 0.15):
+        if not consent_confirmed:
+            raise PermissionError("Xavfsizlik talabi: Ushbu shaxsning biometrik ma'lumotlarini qayta ishlashga roziligi olinganini tasdiqlang: --consent-confirmed")
+
         safe_path = safe_jail_path(video_path)
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir="/home/fayzillo/Desktop/temp" if os.path.exists("/home/fayzillo/Desktop/temp") else None) as tmpdir:
             frame_pattern = os.path.join(tmpdir, "frame_%03d.jpg")
             cmd = ["ffmpeg", "-y", "-i", safe_path, "-vf", "fps=2.0", "-vframes", "40", "-q:v", "2", frame_pattern]
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
@@ -228,7 +308,6 @@ class FacePipeline:
                 best_face = max(faces, key=lambda x: x["score"])
                 emb = self.extract_embedding(best_face["crop"])
 
-                # Check if this angle is sufficiently unique (>15% vector distance from previous angles)
                 is_unique = True
                 for prev_emb in last_embeddings:
                     sim = self.cosine_similarity(emb, prev_emb)
@@ -260,7 +339,29 @@ class FacePipeline:
                 "video_file": os.path.basename(safe_path),
                 "unique_angles_enrolled": len(enrolled_samples),
                 "total_db_samples": len(self.db[name]),
-                "enrolled_frames": enrolled_samples
+                "enrolled_frames": enrolled_samples,
+                "encrypted": True
+            }
+
+    def forget(self, name: str):
+        """
+        Right to be forgotten: permanently deletes a person's biometric vectors from database.
+        """
+        if name in self.db:
+            samples_removed = len(self.db[name])
+            del self.db[name]
+            self._save_db()
+            return {
+                "name": name,
+                "deleted": True,
+                "samples_removed": samples_removed,
+                "remaining_persons": list(self.db.keys())
+            }
+        else:
+            return {
+                "name": name,
+                "deleted": False,
+                "message": f"'{name}' biometrik bazada topilmadi"
             }
 
     def identify_image(self, image_path: str):
@@ -310,32 +411,124 @@ class FacePipeline:
             "faces": results
         }
 
+    def scan_video(self, video_path: str, owner_only: bool = True, owner_name: str = None, allow_multi_identity: bool = False):
+        safe_path = safe_jail_path(video_path)
+        is_owner_mode = owner_only and not allow_multi_identity
+        
+        # Determine owner identity
+        target_owner = owner_name or os.environ.get("AGY_OWNER_NAME")
+        if not target_owner and len(self.db) > 0:
+            target_owner = list(self.db.keys())[0]
+
+        t0 = time.perf_counter()
+        with tempfile.TemporaryDirectory(dir="/home/fayzillo/Desktop/temp" if os.path.exists("/home/fayzillo/Desktop/temp") else None) as tmpdir:
+            frame_pattern = os.path.join(tmpdir, "frame_%03d.jpg")
+            cmd = ["ffmpeg", "-y", "-i", safe_path, "-vf", "fps=1.0", "-vframes", "10", "-q:v", "2", frame_pattern]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+
+            frames = sorted(os.listdir(tmpdir))
+            frame_detections = []
+            verified_people = set()
+
+            for f in frames:
+                f_path = os.path.join(tmpdir, f)
+                res = self.identify_image(f_path)
+                for face in res.get("faces", []):
+                    if is_owner_mode:
+                        # Owner-only privacy protection mode
+                        if target_owner and face["identity"].lower() == target_owner.lower() and face["is_verified"]:
+                            verified_people.add(target_owner)
+                            frame_detections.append({
+                                "frame": f,
+                                "identity": target_owner,
+                                "confidence_pct": face["confidence_pct"],
+                                "box": face["box"]
+                            })
+                        else:
+                            # Strict privacy: do NOT reveal identity or names of other people
+                            frame_detections.append({
+                                "frame": f,
+                                "identity": "unknown_person",
+                                "confidence_pct": 0.0,
+                                "box": face["box"]
+                            })
+                    else:
+                        # Multi-identity mode
+                        if face["is_verified"]:
+                            verified_people.add(face["identity"])
+                        frame_detections.append({
+                            "frame": f,
+                            "identity": face["identity"],
+                            "confidence_pct": face["confidence_pct"],
+                            "box": face["box"]
+                        })
+
+        t_total = (time.perf_counter() - t0) * 1000
+        return {
+            "video_file": os.path.basename(safe_path),
+            "privacy_mode": "owner_only" if is_owner_mode else "multi_identity",
+            "frames_analyzed": len(frames),
+            "detections_count": len(frame_detections),
+            "verified_identities": list(verified_people),
+            "total_time_ms": round(t_total, 2),
+            "timeline": frame_detections
+        }
+
+
 def run_face_enroll(args):
-    if len(args) < 2:
-        emit_result(None, success=False, error="Sintaksis: agy-tool face enroll <name> <image_path>")
+    consent = "--consent-confirmed" in args
+    clean_args = [a for a in args if a != "--consent-confirmed"]
+    if len(clean_args) < 2:
+        emit_result(None, success=False, error="Sintaksis: agy-tool face enroll <name> <image_path> --consent-confirmed")
         return
-    name = args[0]
-    img_path = args[1]
-    emit_progress("Face Biometrics", 30, f"'{name}' yuz embeddingi hisoblanmoqda...")
+    name = clean_args[0]
+    img_path = clean_args[1]
+
+    if not consent:
+        emit_result(None, success=False, error="Xavfsizlik talabi: Ushbu shaxsning biometrik ma'lumotlarini qayta ishlashga roziligi olinganini tasdiqlang: --consent-confirmed")
+        return
+
+    emit_progress("Face Biometrics", 30, f"'{name}' yuz embeddingi shifrlangan holatda hisoblanmoqda...")
     try:
         pipeline = FacePipeline()
-        res = pipeline.enroll(name, img_path)
-        emit_progress("Complete", 100, "Ro'yxatga olindi.")
+        res = pipeline.enroll(name, img_path, consent_confirmed=True)
+        emit_progress("Complete", 100, "Shifrlangan biometriya ro'yxatga olindi.")
         emit_result(res, success=True)
     except Exception as e:
         emit_result(None, success=False, error=str(e))
 
 def run_face_enroll_video(args):
-    if len(args) < 2:
-        emit_result(None, success=False, error="Sintaksis: agy-tool face enroll-video <name> <video_path>")
+    consent = "--consent-confirmed" in args
+    clean_args = [a for a in args if a != "--consent-confirmed"]
+    if len(clean_args) < 2:
+        emit_result(None, success=False, error="Sintaksis: agy-tool face enroll-video <name> <video_path> --consent-confirmed")
         return
-    name = args[0]
-    video_path = args[1]
-    emit_progress("Video Biometrics", 30, f"'{name}' 180° video kadrlaridan ko'p burchakli vektorlar olinmoqda...")
+    name = clean_args[0]
+    video_path = clean_args[1]
+
+    if not consent:
+        emit_result(None, success=False, error="Xavfsizlik talabi: Ushbu shaxsning biometrik ma'lumotlarini qayta ishlashga roziligi olinganini tasdiqlang: --consent-confirmed")
+        return
+
+    emit_progress("Video Biometrics", 30, f"'{name}' 180° video kadrlaridan ko'p burchakli vektorlar shifrlanmoqda...")
     try:
         pipeline = FacePipeline()
-        res = pipeline.enroll_video(name, video_path)
-        emit_progress("Complete", 100, "180° biometrik profil saqlandi.")
+        res = pipeline.enroll_video(name, video_path, consent_confirmed=True)
+        emit_progress("Complete", 100, "180° shifrlangan biometrik profil saqlandi.")
+        emit_result(res, success=True)
+    except Exception as e:
+        emit_result(None, success=False, error=str(e))
+
+def run_face_forget(args):
+    if not args:
+        emit_result(None, success=False, error="Sintaksis: agy-tool face forget <name>")
+        return
+    name = args[0]
+    emit_progress("Right to Forget", 50, f"'{name}' biometrik ma'lumotlari bazadan butunlay o'chirilmoqda...")
+    try:
+        pipeline = FacePipeline()
+        res = pipeline.forget(name)
+        emit_progress("Complete", 100, "O'chirish yakunlandi.")
         emit_result(res, success=True)
     except Exception as e:
         emit_result(None, success=False, error=str(e))
@@ -345,7 +538,7 @@ def run_face_identify(args):
         emit_result(None, success=False, error="Sintaksis: agy-tool face identify <image_path>")
         return
     img_path = args[0]
-    emit_progress("Face Recognition", 40, "Yuzlar aniqlanmoqda va taqqoslanmoqda...")
+    emit_progress("Face Recognition", 40, "Yuzlar aniqlanmoqda va shifrlangan bazadan taqqoslanmoqda...")
     try:
         pipeline = FacePipeline()
         res = pipeline.identify_image(img_path)
@@ -384,58 +577,46 @@ def run_face_verify(args):
 
 def run_face_video(args):
     if not args:
-        emit_result(None, success=False, error="Sintaksis: agy-tool face video <video_path>")
+        emit_result(None, success=False, error="Sintaksis: agy-tool face video <video_path> [--allow-multi-identity] [--owner-name <name>]")
         return
-    video_path = safe_jail_path(args[0])
-    emit_progress("Video Slicing", 20, "Video kadrlar chiqarilmoqda...")
+    
+    allow_multi = "--allow-multi-identity" in args
+    owner_name = None
+    clean_args = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--allow-multi-identity":
+            i += 1
+        elif args[i] == "--owner-name" and i + 1 < len(args):
+            owner_name = args[i + 1]
+            i += 2
+        else:
+            clean_args.append(args[i])
+            i += 1
+
+    if not clean_args:
+        emit_result(None, success=False, error="Video fayl yo'li ko'rsatilmadi.")
+        return
+
+    video_path = safe_jail_path(clean_args[0])
+    emit_progress("Video Slicing", 20, "Video kadrlar chiqarilmoqda (Privacy Guard faol)...")
     try:
         pipeline = FacePipeline()
-        t0 = time.perf_counter()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            frame_pattern = os.path.join(tmpdir, "frame_%03d.jpg")
-            cmd = ["ffmpeg", "-y", "-i", video_path, "-vf", "fps=1.0", "-vframes", "10", "-q:v", "2", frame_pattern]
-            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-
-            frames = sorted(os.listdir(tmpdir))
-            emit_progress("Face Analysis", 60, f"{len(frames)} ta kadrda biometriya tekshirilmoqda...")
-            
-            frame_detections = []
-            verified_people = set()
-
-            for f in frames:
-                f_path = os.path.join(tmpdir, f)
-                res = pipeline.identify_image(f_path)
-                for face in res.get("faces", []):
-                    if face["is_verified"]:
-                        verified_people.add(face["identity"])
-                    frame_detections.append({
-                        "frame": f,
-                        "identity": face["identity"],
-                        "confidence_pct": face["confidence_pct"],
-                        "box": face["box"]
-                    })
-
-        t_total = (time.perf_counter() - t0) * 1000
+        res = pipeline.scan_video(video_path, owner_only=not allow_multi, owner_name=owner_name, allow_multi_identity=allow_multi)
         emit_progress("Complete", 100, "Video skaneri yakunlandi.")
-        emit_result({
-            "video_file": os.path.basename(video_path),
-            "frames_analyzed": len(frames),
-            "detections_count": len(frame_detections),
-            "verified_identities": list(verified_people),
-            "total_time_ms": round(t_total, 2),
-            "timeline": frame_detections
-        }, success=True)
+        emit_result(res, success=True)
     except Exception as e:
         emit_result(None, success=False, error=str(e))
 
 def run_face_list(args):
-    emit_progress("Database", 50, "Biometrik baza o'qilmoqda...")
+    emit_progress("Database", 50, "Shifrlangan biometrik baza o'qilmoqda...")
     try:
         pipeline = FacePipeline()
         summary = {k: len(v) for k, v in pipeline.db.items()}
         emit_result({
             "total_enrolled": len(summary),
-            "enrolled_persons": summary
+            "enrolled_persons": summary,
+            "encrypted": True
         }, success=True)
     except Exception as e:
         emit_result(None, success=False, error=str(e))
@@ -450,7 +631,6 @@ def run_face_benchmark(args):
     try:
         pipeline = FacePipeline()
         latencies = []
-        # Warmup
         pipeline.identify_image(img_path)
         for _ in range(10):
             t0 = time.perf_counter()
@@ -473,7 +653,8 @@ def run_face_benchmark(args):
             },
             "peak_ram_mb": round(peak_ram_mb, 2),
             "throughput_fps": round(1000.0 / statistics.mean(latencies), 1),
-            "cpu_load_impact": "0.00 load average (micro-burst)"
+            "cpu_load_impact": "0.00 load average (micro-burst)",
+            "encrypted_db": True
         }, success=True)
     except Exception as e:
         emit_result(None, success=False, error=str(e))

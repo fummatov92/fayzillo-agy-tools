@@ -233,6 +233,10 @@ def build_parser():
     face_enr.add_argument("name", help="Name of the person")
     face_enr.add_argument("path", help="Image file path containing the face")
 
+    face_enr_vid = face_sub.add_parser("enroll-video", help="Enroll 180-degree multi-angle vectors from video note/MP4")
+    face_enr_vid.add_argument("name", help="Name of the person")
+    face_enr_vid.add_argument("path", help="Video file path containing head rotation")
+
     face_id = face_sub.add_parser("identify", help="Detect and identify all faces in image")
     face_id.add_argument("path", help="Image file path to identify")
 
@@ -428,6 +432,8 @@ def main():
         elif args.module == "face":
             if args.action == "enroll":
                 face_tool.run_face_enroll([args.name, args.path])
+            elif args.action == "enroll-video":
+                face_tool.run_face_enroll_video([args.name, args.path])
             elif args.action == "identify":
                 face_tool.run_face_identify([args.path])
             elif args.action == "verify":

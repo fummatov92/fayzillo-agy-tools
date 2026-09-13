@@ -203,6 +203,66 @@ class FacePipeline:
             "box": box
         }
 
+    def enroll_video(self, name: str, video_path: str, max_samples: int = 8, min_diff_threshold: float = 0.15):
+        """
+        Samples video across 180-degree sweep and extracts unique facial angle vectors.
+        """
+        safe_path = safe_jail_path(video_path)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            frame_pattern = os.path.join(tmpdir, "frame_%03d.jpg")
+            cmd = ["ffmpeg", "-y", "-i", safe_path, "-vf", "fps=2.0", "-vframes", "40", "-q:v", "2", frame_pattern]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            frames = sorted(os.listdir(tmpdir))
+
+            enrolled_samples = []
+            if name not in self.db:
+                self.db[name] = []
+
+            last_embeddings = []
+            for f in frames:
+                f_path = os.path.join(tmpdir, f)
+                img = Image.open(f_path).convert("RGB")
+                faces = self.detect_faces(img)
+                if not faces:
+                    continue
+                best_face = max(faces, key=lambda x: x["score"])
+                emb = self.extract_embedding(best_face["crop"])
+
+                # Check if this angle is sufficiently unique (>15% vector distance from previous angles)
+                is_unique = True
+                for prev_emb in last_embeddings:
+                    sim = self.cosine_similarity(emb, prev_emb)
+                    if sim > (1.0 - min_diff_threshold):
+                        is_unique = False
+                        break
+
+                if is_unique:
+                    last_embeddings.append(emb)
+                    self.db[name].append({
+                        "enrolled_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "source_video": os.path.basename(safe_path),
+                        "frame": f,
+                        "detection_score": best_face["score"],
+                        "box": best_face["box"],
+                        "embedding": emb.tolist()
+                    })
+                    enrolled_samples.append({
+                        "frame": f,
+                        "score": best_face["score"],
+                        "box": best_face["box"]
+                    })
+                    if len(enrolled_samples) >= max_samples:
+                        break
+
+            self._save_db()
+            return {
+                "name": name,
+                "video_file": os.path.basename(safe_path),
+                "unique_angles_enrolled": len(enrolled_samples),
+                "total_db_samples": len(self.db[name]),
+                "enrolled_frames": enrolled_samples
+            }
+
     def identify_image(self, image_path: str):
         safe_path = safe_jail_path(image_path)
         img = Image.open(safe_path).convert("RGB")
@@ -261,6 +321,21 @@ def run_face_enroll(args):
         pipeline = FacePipeline()
         res = pipeline.enroll(name, img_path)
         emit_progress("Complete", 100, "Ro'yxatga olindi.")
+        emit_result(res, success=True)
+    except Exception as e:
+        emit_result(None, success=False, error=str(e))
+
+def run_face_enroll_video(args):
+    if len(args) < 2:
+        emit_result(None, success=False, error="Sintaksis: agy-tool face enroll-video <name> <video_path>")
+        return
+    name = args[0]
+    video_path = args[1]
+    emit_progress("Video Biometrics", 30, f"'{name}' 180° video kadrlaridan ko'p burchakli vektorlar olinmoqda...")
+    try:
+        pipeline = FacePipeline()
+        res = pipeline.enroll_video(name, video_path)
+        emit_progress("Complete", 100, "180° biometrik profil saqlandi.")
         emit_result(res, success=True)
     except Exception as e:
         emit_result(None, success=False, error=str(e))

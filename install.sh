@@ -1,38 +1,52 @@
 #!/usr/bin/env bash
 # ==========================================================
-# fayzillo-agy-tools Install Script
+# fayzillo-agy-tools Universal Installer
 # ==========================================================
 set -e
 
 INSTALL_DIR="$HOME/.local/bin"
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "🚀 fayzillo-agy-tools o'rnatilmoqda..."
+echo "🚀 [1/3] fayzillo-agy-tools o'rnatilmoqda..."
+echo "📂 Manba katalogi: $SOURCE_DIR"
 
+# 1. Tizim talablarini tekshirish
+if ! command -v python3 &> /dev/null; then
+    echo "❌ Xato: python3 topilmadi. Iltimos Python 3.10+ o'rnating."
+    exit 1
+fi
+
+if ! command -v ffmpeg &> /dev/null; then
+    echo "⚠️ Ogohlantirish: ffmpeg topilmadi. Video/Audio tahlili uchun 'sudo apt install ffmpeg' tavsiya etiladi."
+fi
+
+# 2. Python bog'liqliklarini o'rnatish
+echo "📦 [2/3] Python kutubxonalari tekshirilmoqda..."
+if [ -f "$SOURCE_DIR/requirements.txt" ]; then
+    python3 -m pip install --break-system-packages --quiet -r "$SOURCE_DIR/requirements.txt" 2>/dev/null || \
+    python3 -m pip install --user --quiet -r "$SOURCE_DIR/requirements.txt" 2>/dev/null || \
+    python3 -m pip install -r "$SOURCE_DIR/requirements.txt"
+fi
+
+# 3. ~/.local/bin/agy-tool skriptini yaratish
+echo "⚙️ [3/3] Global CLI binarini ulash (~/.local/bin/agy-tool)..."
 mkdir -p "$INSTALL_DIR"
-
-# Symlink or copy
 chmod +x "$SOURCE_DIR/bin/agy-tool"
 
-# Create launcher in ~/.local/bin/agy-tool
-cat << 'EOF' > "$INSTALL_DIR/agy-tool"
+cat << EOF > "$INSTALL_DIR/agy-tool"
 #!/usr/bin/env bash
-SCRIPT_DIR="$(dirname "$(realpath "$0")")"
-# If cloned in Desktop or specific directory:
-TOOL_ENTRY="$HOME/Desktop/fayzillo-agy-tools/bin/agy-tool"
-if [ ! -f "$TOOL_ENTRY" ]; then
-  TOOL_ENTRY="$HOME/Desktop/agy_tasks/dynamic_agy_toolsuite/work/fayzillo-agy-tools/bin/agy-tool"
-fi
-
-if [ -f "$TOOL_ENTRY" ]; then
-  exec "$TOOL_ENTRY" "$@"
-else
-  echo '{"success": false, "error": "agy-tool executable topilmadi!"}' >&2
-  exit 1
-fi
+exec "$SOURCE_DIR/bin/agy-tool" "\$@"
 EOF
 
 chmod +x "$INSTALL_DIR/agy-tool"
 
-echo "✅ O'rnatish muvaffaqiyatli yakunlandi!"
+# PATH tekshiruvi
+if [[ ":\$PATH:" != *":$HOME/.local/bin:"* ]]; then
+    echo "ℹ️ Eslatma: ~/.local/bin sizning PATH muhitingizga qo'shilishi kerak:"
+    echo '   export PATH="\$HOME/.local/bin:\$PATH"'
+fi
+
+echo "=========================================================="
+echo "✅ fayzillo-agy-tools v1.5.0 muvaffaqiyatli o'rnatildi!"
 echo "Tekshirish: agy-tool --describe"
+echo "=========================================================="

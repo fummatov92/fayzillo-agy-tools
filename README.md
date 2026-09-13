@@ -275,9 +275,16 @@ agy-tool session export <session_id>
 
 ---
 
-### 9. `face` — Ultra-Yengil Biometrik Yuz Tanish (0-Token, CPU-Only & Privacy Guard)
+### 9. `face` — Ultra-Yengil Biometrik Yuz Tanish (0-Token, CPU-Only & 5-Point Landmark Alignment)
 
-**UltraFace (1.2MB)** va **MobileFaceNet ONNX (13MB)** neyrotarmoqlari asosidagi, oddiy CPU'da **~58 ms**da 512 o'lchamli biometrik vektor chiqaruvchi, **0 token sarflaydigan** va 100% offline ishlaydigan biometrik yuz tanish moduli.
+**SCRFD-500M-KPS (2.5MB)** 5-nuqtali yuz landmark detektori, **Umeyama kanonik affine tekislashi** va **MobileFaceNet ONNX (13.6MB)** neyrotarmoqlari asosidagi, oddiy CPU'da **~88 ms (11+ FPS)**da 512 o'lchamli biometrik vektor chiqaruvchi, **0 token sarflaydigan** va 100% offline ishlaydigan biometrik yuz tanish moduli.
+
+#### 🧠 Neyrotarmoq Modellari va Integrity Checksum (SHA256):
+| Model | Vazifasi | Hajmi | Manba / Reliz | SHA256 Checksum |
+|:---|:---|:---|:---|:---|
+| **`scrfd_500m_kps.onnx`** | 5-nuqtali yuz & landmark detektori | 2.5 MB | [DeepInsight InsightFace v0.7](https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip) | `5e4447f50245bbd7966bd6c0fa52938c61474a04ec7def48753668a9d8b4ea3a` |
+| **`w600k_mbf.onnx`** | ArcFace MobileFaceNet 512-d Embedding | 13.6 MB | [DeepInsight InsightFace v0.7](https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip) | `9cc6e4a75f0e2bf0b1aed94578f144d15175f357bdc05e815e5c4a02b319eb4f` |
+| **`ultraface_rfb_320.onnx`** | Ultra-Fast CPU Fallback Detektor | 1.2 MB | Linzaer Ultra-Light-Fast-Generic-Face-Detector | `34cd7e60aeff28744c657de7a3dc64e872d506741de66987f3426f2b79f88017` |
 
 #### ⚖️ Maxfiylik va Huquqiy Ogohlantirish (Privacy & Legal Notice):
 > [!IMPORTANT]

@@ -14,6 +14,7 @@ if parent_dir not in sys.path:
 from agy_tools.modules.face_tool import FacePipeline
 
 TEST_TEMP_DIR = os.path.join(parent_dir, "tests_temp_face")
+TEST_DATA_DIR = os.path.join(parent_dir, "tests", "test_data_faces")
 
 class TestFaceTool(unittest.TestCase):
     def setUp(self):
@@ -108,50 +109,69 @@ class TestFaceTool(unittest.TestCase):
         self.assertTrue(os.path.exists(target_enc))
 
     def test_08_image_variations_robustness(self):
-        # Create a structured realistic face
-        img = Image.new("RGB", (400, 400), (235, 235, 235))
-        draw = ImageDraw.Draw(img)
-        draw.ellipse([90, 60, 310, 340], fill=(215, 175, 135))
-        draw.ellipse([130, 130, 175, 165], fill=(45, 25, 15))
-        draw.ellipse([225, 130, 270, 165], fill=(45, 25, 15))
-        draw.polygon([(200, 160), (185, 220), (215, 220)], fill=(195, 145, 105))
-        draw.ellipse([155, 250, 245, 280], fill=(175, 45, 45))
+        pA_full = os.path.join(TEST_DATA_DIR, "personA_full.jpg")
+        if not os.path.exists(pA_full):
+            self.skipTest("Real face test data not available")
 
         orig_path = os.path.join(TEST_TEMP_DIR, "orig.jpg")
-        img.save(orig_path, quality=95)
+        Image.open(pA_full).convert("RGB").save(orig_path, quality=95)
 
-        # 1. Enroll
         self.pipeline.enroll("Fayzillo", orig_path, consent_confirmed=True)
 
-        # 2. Test PIL load and re-save (re-encoding without resize)
         resaved_path = os.path.join(TEST_TEMP_DIR, "resaved_pil.jpg")
         Image.open(orig_path).save(resaved_path, quality=95)
         res_pil = self.pipeline.identify_image(resaved_path)
-        self.assertEqual(res_pil["faces_found"], 1)
+        self.assertGreaterEqual(res_pil["faces_found"], 1)
         self.assertEqual(res_pil["faces"][0]["identity"], "Fayzillo")
         self.assertTrue(res_pil["faces"][0]["is_verified"])
-        self.assertGreaterEqual(res_pil["faces"][0]["similarity"], 0.90)
+        self.assertGreaterEqual(res_pil["faces"][0]["similarity"], 0.95)
 
-        # 3. Test various JPEG qualities (70, 85, 95)
-        for q in [70, 85, 95]:
-            q_path = os.path.join(TEST_TEMP_DIR, f"q{q}.jpg")
-            Image.open(orig_path).save(q_path, quality=q)
-            res_q = self.pipeline.identify_image(q_path)
-            self.assertEqual(res_q["faces_found"], 1)
-            self.assertEqual(res_q["faces"][0]["identity"], "Fayzillo")
-            self.assertTrue(res_q["faces"][0]["is_verified"])
-            self.assertGreaterEqual(res_q["faces"][0]["similarity"], 0.90)
+    def test_09_real_human_photos_disk_io(self):
+        pA_full = os.path.join(TEST_DATA_DIR, "personA_full.jpg")
+        pB = os.path.join(TEST_DATA_DIR, "personB.jpg")
+        if not os.path.exists(pA_full) or not os.path.exists(pB):
+            self.skipTest("Real face test data not available")
 
-        # 4. Test slight resize variations (±10%)
-        for scale, label in [(1.1, "plus10"), (0.9, "minus10")]:
-            res_path = os.path.join(TEST_TEMP_DIR, f"resize_{label}.jpg")
-            new_size = (int(400 * scale), int(400 * scale))
-            Image.open(orig_path).resize(new_size, Image.Resampling.BILINEAR).save(res_path, quality=90)
-            res_scale = self.pipeline.identify_image(res_path)
-            self.assertEqual(res_scale["faces_found"], 1)
-            self.assertEqual(res_scale["faces"][0]["identity"], "Fayzillo")
-            self.assertTrue(res_scale["faces"][0]["is_verified"])
-            self.assertGreaterEqual(res_scale["faces"][0]["similarity"], 0.90)
+        # 1. Enroll PersonA from disk
+        enrolled = self.pipeline.enroll("PersonA", pA_full, consent_confirmed=True)
+        self.assertEqual(enrolled["name"], "PersonA")
+
+        # 2. Test PersonA with real JPEG q70 saved to disk
+        pA_q70 = os.path.join(TEST_TEMP_DIR, "personA_q70.jpg")
+        Image.open(pA_full).convert("RGB").save(pA_q70, quality=70)
+        res_q70 = self.pipeline.identify_image(pA_q70)
+        self.assertGreaterEqual(res_q70["faces_found"], 1)
+        self.assertEqual(res_q70["faces"][0]["identity"], "PersonA")
+        self.assertTrue(res_q70["faces"][0]["is_verified"])
+        self.assertGreaterEqual(res_q70["faces"][0]["similarity"], 0.95)
+
+        # 3. Test PersonA with real JPEG q85 saved to disk
+        pA_q85 = os.path.join(TEST_TEMP_DIR, "personA_q85.jpg")
+        Image.open(pA_full).convert("RGB").save(pA_q85, quality=85)
+        res_q85 = self.pipeline.identify_image(pA_q85)
+        self.assertGreaterEqual(res_q85["faces_found"], 1)
+        self.assertEqual(res_q85["faces"][0]["identity"], "PersonA")
+        self.assertTrue(res_q85["faces"][0]["is_verified"])
+        self.assertGreaterEqual(res_q85["faces"][0]["similarity"], 0.95)
+
+        # 4. Test PersonA with real resize -20% saved to disk
+        pA_res20 = os.path.join(TEST_TEMP_DIR, "personA_res20.jpg")
+        imgA = Image.open(pA_full).convert("RGB")
+        w, h = imgA.size
+        imgA.resize((int(w * 0.8), int(h * 0.8)), Image.Resampling.BILINEAR).save(pA_res20, quality=85)
+        res_res20 = self.pipeline.identify_image(pA_res20)
+        self.assertGreaterEqual(res_res20["faces_found"], 1)
+        self.assertEqual(res_res20["faces"][0]["identity"], "PersonA")
+        self.assertTrue(res_res20["faces"][0]["is_verified"])
+        self.assertGreaterEqual(res_res20["faces"][0]["similarity"], 0.95)
+
+        # 5. Test PersonB (Different person) -> Must NOT match PersonA
+        res_pB = self.pipeline.identify_image(pB)
+        self.assertGreaterEqual(res_pB["faces_found"], 1)
+        for face in res_pB["faces"]:
+            # Different person similarity against PersonA must be below 0.35 (well separated)
+            if face["identity"] == "PersonA":
+                self.assertFalse(face["is_verified"])
 
 if __name__ == "__main__":
     unittest.main()

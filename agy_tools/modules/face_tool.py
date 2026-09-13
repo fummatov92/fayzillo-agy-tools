@@ -79,6 +79,89 @@ def get_face_describe():
         }
     }
 
+def distance2bbox(points, distance, max_shape=None):
+    x1 = points[:, 0] - distance[:, 0]
+    y1 = points[:, 1] - distance[:, 1]
+    x2 = points[:, 0] + distance[:, 2]
+    y2 = points[:, 1] + distance[:, 3]
+    if max_shape is not None:
+        x1 = np.clip(x1, 0, max_shape[1])
+        y1 = np.clip(y1, 0, max_shape[0])
+        x2 = np.clip(x2, 0, max_shape[1])
+        y2 = np.clip(y2, 0, max_shape[0])
+    return np.stack([x1, y1, x2, y2], axis=-1)
+
+
+def distance2kps(points, distance, max_shape=None):
+    preds = []
+    for i in range(0, distance.shape[1], 2):
+        px = points[:, i % 2] + distance[:, i]
+        py = points[:, i % 2 + 1] + distance[:, i + 1]
+        if max_shape is not None:
+            px = np.clip(px, 0, max_shape[1])
+            py = np.clip(py, 0, max_shape[0])
+        preds.append(px)
+        preds.append(py)
+    return np.stack(preds, axis=-1)
+
+
+def estimate_norm(lmk, dst_size=112):
+    """Pure numpy implementation of Umeyama 5-point affine similarity transform to ArcFace canonical template."""
+    src = np.array([
+        [38.2946, 51.6963],
+        [73.5318, 51.6963],
+        [56.0252, 71.7366],
+        [41.5493, 92.3655],
+        [70.7299, 92.3655]
+    ], dtype=np.float64)
+
+    lmk = np.asarray(lmk, dtype=np.float64)
+    num = lmk.shape[0]
+    dim = lmk.shape[1]
+
+    src_mean = src.mean(axis=0)
+    dst_mean = lmk.mean(axis=0)
+
+    src_demean = src - src_mean
+    dst_demean = lmk - dst_mean
+
+    A = np.dot(src_demean.T, dst_demean) / num
+    d = np.ones((dim,), dtype=np.float64)
+    if np.linalg.det(A) < 0:
+        d[dim - 1] = -1
+
+    T = np.eye(dim + 1, dtype=np.float64)
+    U, S, V = np.linalg.svd(A)
+
+    rank = np.linalg.matrix_rank(A)
+    if rank == 0:
+        return np.nan
+    elif rank == dim - 1:
+        if np.linalg.det(U) * np.linalg.det(V) > 0:
+            T[:dim, :dim] = np.dot(U, V)
+        else:
+            s = d[dim - 1]
+            d[dim - 1] = -1
+            T[:dim, :dim] = np.dot(U, np.dot(np.diag(d), V))
+            d[dim - 1] = s
+    else:
+        T[:dim, :dim] = np.dot(U, np.dot(np.diag(d), V))
+
+    scale = 1.0 / dst_demean.var(axis=0).sum() * np.dot(S, d)
+    T[:dim, dim] = src_mean - scale * np.dot(T[:dim, :dim], dst_mean)
+    T[:dim, :dim] *= scale
+    return T[:2, :]
+
+
+def warp_affine_pil(pil_img: Image.Image, M: np.ndarray, output_size: tuple = (112, 112)) -> Image.Image:
+    """Applies a 2x3 affine matrix to a PIL Image using inverse mapping."""
+    M_3x3 = np.vstack([M, [0, 0, 1]])
+    inv_M = np.linalg.inv(M_3x3)[:2, :]
+    pil_matrix = (inv_M[0, 0], inv_M[0, 1], inv_M[0, 2],
+                  inv_M[1, 0], inv_M[1, 1], inv_M[1, 2])
+    return pil_img.transform(output_size, Image.Transform.AFFINE, data=pil_matrix, resample=Image.Resampling.BILINEAR)
+
+
 def align_to_square(pil_img: Image.Image) -> Image.Image:
     """Aligns any rectangular image to a 1:1 square canvas with neutral padding."""
     w, h = pil_img.size
@@ -134,7 +217,11 @@ class FacePipeline:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.models_dir = os.path.join(base_dir, "models")
         
-        self.det_model_path = os.path.join(self.models_dir, "ultraface_rfb_320.onnx")
+        scrfd_path = os.path.join(self.models_dir, "scrfd_500m_kps.onnx")
+        ultraface_path = os.path.join(self.models_dir, "ultraface_rfb_320.onnx")
+        
+        self.use_scrfd = os.path.exists(scrfd_path)
+        self.det_model_path = scrfd_path if self.use_scrfd else ultraface_path
         self.emb_model_path = os.path.join(self.models_dir, "w600k_mbf.onnx")
         
         self.db_path = db_path or DEFAULT_DB_PATH
@@ -144,6 +231,7 @@ class FacePipeline:
         self.conf_threshold = 0.50
         self.iou_threshold = 0.4
         self.match_threshold = 0.50
+        self._feat_stride_fpn = [8, 16, 32]
         
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 1
@@ -226,52 +314,149 @@ class FacePipeline:
 
     def detect_faces(self, pil_img: Image.Image, conf_threshold: float = None):
         orig_w, orig_h = pil_img.size
-        img_resized = pil_img.resize((320, 240), Image.Resampling.BILINEAR)
-        img_np = np.array(img_resized, dtype=np.float32)
-        img_np = (img_np - 127.0) / 128.0
-        img_np = np.transpose(img_np, (2, 0, 1))
-        img_tensor = np.expand_dims(img_np, axis=0)
-
-        outputs = self.det_sess.run(None, {self.det_input_name: img_tensor})
-        scores_raw = outputs[0][0]
-        boxes_raw = outputs[1][0]
-
-        face_scores = scores_raw[:, 1]
         threshold = conf_threshold if conf_threshold is not None else self.conf_threshold
-        mask = face_scores > threshold
-        filtered_scores = face_scores[mask]
-        filtered_boxes = boxes_raw[mask]
+        
+        if self.use_scrfd:
+            # SCRFD 500M KPS with 5-point landmark alignment
+            target_size = (640, 640)
+            im_ratio = float(orig_w) / orig_h
+            model_ratio = float(target_size[0]) / target_size[1]
+            if im_ratio > model_ratio:
+                new_w = target_size[0]
+                new_h = int(new_w / im_ratio)
+            else:
+                new_h = target_size[1]
+                new_w = int(new_h * im_ratio)
+            
+            det_scale = float(new_w) / orig_w
+            resized_img = pil_img.resize((new_w, new_h), Image.Resampling.BILINEAR)
+            det_img = Image.new("RGB", target_size, (0, 0, 0))
+            det_img.paste(resized_img, (0, 0))
+            
+            img_np = np.array(det_img, dtype=np.float32)[:, :, ::-1] # RGB to BGR
+            img_np = (img_np - 127.5) / 128.0
+            img_np = np.transpose(img_np, (2, 0, 1))
+            blob = np.expand_dims(img_np, axis=0)
+            
+            net_outs = self.det_sess.run(None, {self.det_input_name: blob})
+            input_height, input_width = target_size[1], target_size[0]
+            scores_list = []
+            bboxes_list = []
+            kpss_list = []
+            
+            for idx, stride in enumerate(self._feat_stride_fpn):
+                scores = net_outs[idx]
+                bbox_preds = net_outs[idx + 3] * stride
+                kps_preds = net_outs[idx + 6] * stride
+                
+                height = input_height // stride
+                width = input_width // stride
+                
+                anchor_centers = np.stack(np.mgrid[:height, :width][::-1], axis=-1).astype(np.float32)
+                anchor_centers = (anchor_centers * stride).reshape((-1, 2))
+                anchor_centers = np.stack([anchor_centers] * 2, axis=1).reshape((-1, 2))
+                
+                pos_inds = np.where(scores >= threshold)[0]
+                if len(pos_inds) > 0:
+                    bboxes = distance2bbox(anchor_centers, bbox_preds)
+                    scores_list.append(scores[pos_inds])
+                    bboxes_list.append(bboxes[pos_inds])
+                    kpss = distance2kps(anchor_centers, kps_preds).reshape((-1, 5, 2))
+                    kpss_list.append(kpss[pos_inds])
+                    
+            if len(scores_list) == 0:
+                return []
+                
+            scores = np.vstack(scores_list)
+            bboxes = np.vstack(bboxes_list) / det_scale
+            kpss = np.vstack(kpss_list) / det_scale
+            
+            order = scores.ravel().argsort()[::-1]
+            keep = []
+            while order.size > 0:
+                i = order[0]
+                keep.append(i)
+                if order.size == 1:
+                    break
+                xx1 = np.maximum(bboxes[i, 0], bboxes[order[1:], 0])
+                yy1 = np.maximum(bboxes[i, 1], bboxes[order[1:], 1])
+                xx2 = np.minimum(bboxes[i, 2], bboxes[order[1:], 2])
+                yy2 = np.minimum(bboxes[i, 3], bboxes[order[1:], 3])
+                w = np.maximum(0.0, xx2 - xx1)
+                h = np.maximum(0.0, yy2 - yy1)
+                inter = w * h
+                ovr = inter / ((bboxes[i, 2] - bboxes[i, 0]) * (bboxes[i, 3] - bboxes[i, 1]) +
+                               (bboxes[order[1:], 2] - bboxes[order[1:], 0]) * (bboxes[order[1:], 3] - bboxes[order[1:], 1]) - inter)
+                inds = np.where(ovr <= self.iou_threshold)[0]
+                order = order[inds + 1]
+                
+            faces = []
+            for i in keep:
+                kps = kpss[i]
+                box = bboxes[i].tolist()
+                score = float(scores[i][0])
+                try:
+                    M = estimate_norm(kps, dst_size=112)
+                    aligned_face = warp_affine_pil(pil_img, M, (112, 112))
+                except Exception:
+                    aligned_face = align_square_crop(pil_img, box, margin=1.25)
+                
+                faces.append({
+                    "box": box,
+                    "score": round(score, 4),
+                    "crop": aligned_face,
+                    "kps": kps.tolist()
+                })
+            return faces
 
-        if len(filtered_scores) == 0:
-            return []
+        else:
+            # Fallback UltraFace RFB
+            img_resized = pil_img.resize((320, 240), Image.Resampling.BILINEAR)
+            img_np = np.array(img_resized, dtype=np.float32)
+            img_np = (img_np - 127.0) / 128.0
+            img_np = np.transpose(img_np, (2, 0, 1))
+            img_tensor = np.expand_dims(img_np, axis=0)
 
-        scaled_boxes = []
-        for box in filtered_boxes:
-            x1 = max(0, int(box[0] * orig_w))
-            y1 = max(0, int(box[1] * orig_h))
-            x2 = min(orig_w, int(box[2] * orig_w))
-            y2 = min(orig_h, int(box[3] * orig_h))
-            scaled_boxes.append([x1, y1, x2, y2])
-        scaled_boxes = np.array(scaled_boxes)
+            outputs = self.det_sess.run(None, {self.det_input_name: img_tensor})
+            scores_raw = outputs[0][0]
+            boxes_raw = outputs[1][0]
 
-        keep_idx = self._nms(scaled_boxes, filtered_scores)
-        results = []
-        for idx in keep_idx:
-            box = scaled_boxes[idx].tolist()
-            score = float(filtered_scores[idx])
-            aligned_crop = align_square_crop(pil_img, box, margin=1.25)
-            results.append({
-                "box": box,
-                "score": round(score, 4),
-                "crop": aligned_crop
-            })
-        return results
+            face_scores = scores_raw[:, 1]
+            mask = face_scores > threshold
+            filtered_scores = face_scores[mask]
+            filtered_boxes = boxes_raw[mask]
+
+            if len(filtered_scores) == 0:
+                return []
+
+            scaled_boxes = []
+            for box in filtered_boxes:
+                x1 = max(0, int(box[0] * orig_w))
+                y1 = max(0, int(box[1] * orig_h))
+                x2 = min(orig_w, int(box[2] * orig_w))
+                y2 = min(orig_h, int(box[3] * orig_h))
+                scaled_boxes.append([x1, y1, x2, y2])
+            scaled_boxes = np.array(scaled_boxes)
+
+            keep_idx = self._nms(scaled_boxes, filtered_scores)
+            results = []
+            for idx in keep_idx:
+                box = scaled_boxes[idx].tolist()
+                score = float(filtered_scores[idx])
+                aligned_crop = align_square_crop(pil_img, box, margin=1.25)
+                results.append({
+                    "box": box,
+                    "score": round(score, 4),
+                    "crop": aligned_crop
+                })
+            return results
 
     def extract_embedding(self, pil_face: Image.Image) -> np.ndarray:
         if pil_face.size != (112, 112):
             pil_face = align_to_square(pil_face)
             pil_face = pil_face.resize((112, 112), Image.Resampling.BILINEAR)
         img_np = np.array(pil_face, dtype=np.float32)
+        img_np = img_np[:, :, ::-1] # RGB to BGR for MobileFaceNet
         img_np = (img_np - 127.5) / 128.0
         img_np = np.transpose(img_np, (2, 0, 1))
         img_tensor = np.expand_dims(img_np, axis=0)

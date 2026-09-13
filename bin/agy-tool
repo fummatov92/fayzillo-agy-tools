@@ -11,7 +11,7 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool, doc_tool, media_tool, session_tool, super_media_tool
+from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool, doc_tool, media_tool, session_tool, super_media_tool, face_tool
 from agy_tools.utils import emit_result, set_checkpoint_hook, set_result_hook
 from agy_tools.logger import RunLogger, get_logger
 
@@ -225,12 +225,28 @@ def build_parser():
     smed_arc.add_argument("--compact", action="store_true", help="Compact category summary")
     smed_arc.add_argument("--format", choices=["json", "table"], default="json", help="Output format (json or table)")
 
-    # pipeline
-    smed_pip = smed_sub.add_parser("pipeline", help="Super Multimodal Pipeline (auto detects media type)")
-    smed_pip.add_argument("path", help="Target media/archive file path")
-    smed_pip.add_argument("--compact", action="store_true", help="Compact pipeline summary")
-    smed_pip.add_argument("--format", choices=["json", "table"], default="json", help="Output format (json or table)")
-    smed_pip.add_argument("--output-dir", help="Output directory for pipeline artifacts")
+    # === FACE MODULE ===
+    face_p = subparsers.add_parser("face", help="Ultra-light CPU-only biometric face recognition (0-token)")
+    face_sub = face_p.add_subparsers(dest="action")
+
+    face_enr = face_sub.add_parser("enroll", help="Enroll a person's face embedding into biometric DB")
+    face_enr.add_argument("name", help="Name of the person")
+    face_enr.add_argument("path", help="Image file path containing the face")
+
+    face_id = face_sub.add_parser("identify", help="Detect and identify all faces in image")
+    face_id.add_argument("path", help="Image file path to identify")
+
+    face_ver = face_sub.add_parser("verify", help="Verify if image matches specific person")
+    face_ver.add_argument("path", help="Image file path")
+    face_ver.add_argument("name", help="Target person name to verify against")
+
+    face_vid = face_sub.add_parser("video", help="Scan video/video notes and track identified faces")
+    face_vid.add_argument("path", help="Video file path")
+
+    face_ls = face_sub.add_parser("list", help="List all enrolled people in database")
+
+    face_bench = face_sub.add_parser("benchmark", help="Run latency, CPU and RAM benchmark")
+    face_bench.add_argument("path", help="Sample image file path")
 
     return parser
 
@@ -291,7 +307,7 @@ def main():
         if args.describe or not args.module:
             capabilities = {
                 "name": "agy-tool",
-                "version": "1.4.0",
+                "version": "1.5.0",
                 "modules": {
                     "sys": sys_tool.get_sys_describe(),
                     "code": code_tool.get_code_describe(),
@@ -300,7 +316,8 @@ def main():
                     "doc": doc_tool.get_doc_describe(),
                     "media": media_tool.get_media_describe(),
                     "session": session_tool.get_session_describe(),
-                    "super_media": super_media_tool.get_super_media_describe()
+                    "super_media": super_media_tool.get_super_media_describe(),
+                    "face": face_tool.get_face_describe()
                 }
             }
             emit_result(capabilities)
@@ -406,6 +423,26 @@ def main():
                     super_media_tool.run_super_pipeline(args)
                 else:
                     emit_result(None, success=False, error=f"Noma'lum super-media buyrug'i: {args.action}")
+                    exit_code = 1
+
+        elif args.module == "face":
+            if args.action == "enroll":
+                face_tool.run_face_enroll([args.name, args.path])
+            elif args.action == "identify":
+                face_tool.run_face_identify([args.path])
+            elif args.action == "verify":
+                face_tool.run_face_verify([args.path, args.name])
+            elif args.action == "video":
+                face_tool.run_face_video([args.path])
+            elif args.action == "list" or not args.action:
+                face_tool.run_face_list([])
+            elif args.action == "benchmark":
+                face_tool.run_face_benchmark([args.path])
+            else:
+                if os.path.exists(args.action):
+                    face_tool.run_face_identify([args.action])
+                else:
+                    emit_result(None, success=False, error=f"Noma'lum face buyrug'i: {args.action}")
                     exit_code = 1
 
         else:

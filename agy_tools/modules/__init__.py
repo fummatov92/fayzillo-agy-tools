@@ -7,7 +7,8 @@ from agy_tools.modules import (
     media_tool,
     session_tool,
     super_media_tool,
-    face_tool
+    face_tool,
+    stats_tool
 )
 
 __all__ = [
@@ -19,5 +20,6 @@ __all__ = [
     "media_tool",
     "session_tool",
     "super_media_tool",
-    "face_tool"
+    "face_tool",
+    "stats_tool"
 ]

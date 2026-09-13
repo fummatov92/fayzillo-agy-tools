@@ -11,6 +11,132 @@ APP_DATA_DIR = os.path.expanduser("~/.gemini/antigravity-cli")
 BRAIN_DIR = os.path.join(APP_DATA_DIR, "brain")
 DB_PATH = os.path.join(APP_DATA_DIR, "conversation_summaries.db")
 
+def get_brain_dir() -> str:
+    return BRAIN_DIR
+
+class SessionInspector:
+    def __init__(self, brain_dir: str = None):
+        self.brain_dir = brain_dir or BRAIN_DIR
+
+    def inspect_session(self, session_id: str, limit: int = 100):
+        t_path, real_id = get_transcript_path(session_id)
+        if not t_path or not os.path.exists(t_path):
+            return {
+                "conversation_id": session_id,
+                "transcript_file": None,
+                "total_steps": 0,
+                "total_user_turns": 0,
+                "start_time": None,
+                "last_time": None,
+                "tool_counts": {},
+                "user_turns": [],
+                "last_assistant_snippet": ""
+            }
+
+        user_turns = []
+        tool_counts = {}
+        total_steps = 0
+        start_time = None
+        last_time = None
+        last_assistant_response = ""
+
+        with open(t_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                total_steps += 1
+                try:
+                    data = json.loads(line)
+                    created_at = data.get("created_at")
+                    if not start_time and created_at:
+                        start_time = created_at
+                    if created_at:
+                        last_time = created_at
+
+                    step_idx = data.get("step_index", total_steps)
+                    step_type = data.get("type")
+                    source = data.get("source")
+                    content = data.get("content", "")
+                    tool_calls = data.get("tool_calls", [])
+
+                    if tool_calls:
+                        for tc in tool_calls:
+                            name = tc.get("name") or "unknown"
+                            tool_counts[name] = tool_counts.get(name, 0) + 1
+
+                    if step_type == "USER_INPUT" or source == "USER_EXPLICIT":
+                        cleaned = clean_user_prompt(content)
+                        user_turns.append({
+                            "step_index": step_idx,
+                            "time": created_at,
+                            "text": cleaned
+                        })
+                    elif step_type == "PLANNER_RESPONSE" and content:
+                        last_assistant_response = content
+                except Exception:
+                    pass
+
+        return {
+            "conversation_id": real_id,
+            "transcript_file": t_path,
+            "total_steps": total_steps,
+            "total_user_turns": len(user_turns),
+            "start_time": start_time,
+            "last_time": last_time,
+            "tool_counts": tool_counts,
+            "user_turns": user_turns,
+            "last_assistant_snippet": last_assistant_response[:400] if last_assistant_response else ""
+        }
+
+    def list_sessions(self, limit: int = 15, search: str = None):
+        sessions = []
+        if os.path.exists(DB_PATH):
+            try:
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                if search:
+                    query = """
+                        SELECT conversation_id, title, preview, step_count, last_modified_time, agent_name
+                        FROM conversation_summaries
+                        WHERE conversation_id LIKE ? OR title LIKE ? OR preview LIKE ?
+                        ORDER BY last_modified_time DESC LIMIT ?
+                    """
+                    c.execute(query, (f"%{search}%", f"%{search}%", f"%{search}%", limit))
+                else:
+                    query = """
+                        SELECT conversation_id, title, preview, step_count, last_modified_time, agent_name
+                        FROM conversation_summaries
+                        ORDER BY last_modified_time DESC LIMIT ?
+                    """
+                    c.execute(query, (limit,))
+                rows = c.fetchall()
+                for r in rows:
+                    sessions.append({
+                        "conversation_id": r[0],
+                        "title": r[1] or "(Nomsiz)",
+                        "preview": (r[2] or "").replace("\n", " ")[:60],
+                        "step_count": r[3] or 0,
+                        "last_modified": r[4] or "",
+                        "agent": r[5] or "default"
+                    })
+                conn.close()
+            except Exception:
+                pass
+
+        if not sessions and os.path.exists(self.brain_dir):
+            dirs = os.listdir(self.brain_dir)
+            for d in sorted(dirs, key=lambda x: os.path.getmtime(os.path.join(self.brain_dir, x)) if os.path.exists(os.path.join(self.brain_dir, x)) else 0, reverse=True)[:limit]:
+                d_path = os.path.join(self.brain_dir, d)
+                if os.path.isdir(d_path):
+                    sessions.append({
+                        "conversation_id": d,
+                        "title": "(Brain Dir)",
+                        "preview": "",
+                        "step_count": 0,
+                        "last_modified": datetime.fromtimestamp(os.path.getmtime(d_path)).isoformat(),
+                        "agent": "unknown"
+                    })
+        return sessions
+
+
 def get_session_describe():
     return {
         "name": "session",

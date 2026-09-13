@@ -324,6 +324,25 @@ agy-tool face benchmark /yo'l/foto.jpg
 
 ---
 
+### 10. `stats` — Token, Latency & Cost ROI Intelligence
+
+AGY sessiyalari, vositalar chaqiruvi va an'anaviy xom LLM (Raw LLM) operatsiyalarini taqqoslab, token sarfi, pul tejami ($) va tezlik omilini (Speedup Factor) hisoblovchi ROI tahlil moduli.
+
+```bash
+# 1. Joriy yoki ko'rsatilgan sessiyaning to'liq ROI tahlili
+agy-tool stats session <session_id> --table
+
+# 2. Barcha oxirgi sessiyalar bo'yicha global tejamkorlik konspekti
+agy-tool stats summary -n 15 --table
+
+# 3. Muayyan vositaning an'anaviy LLM ga nisbatan taqqosiy samaradorligi
+agy-tool stats compare --tool face
+agy-tool stats compare --tool super-media
+agy-tool stats compare --tool stats
+```
+
+---
+
 ## ⚙️ Konfiguratsiya Fayllari
 
 Loyihangiz ildiz jildida quyidagi ixtiyoriy konfiguratsiya fayllarini yaratishingiz mumkin:

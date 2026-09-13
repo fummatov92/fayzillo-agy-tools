@@ -11,7 +11,7 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool, doc_tool, media_tool, session_tool, super_media_tool, face_tool
+from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool, doc_tool, media_tool, session_tool, super_media_tool, face_tool, stats_tool
 from agy_tools.utils import emit_result, set_checkpoint_hook, set_result_hook
 from agy_tools.logger import RunLogger, get_logger
 
@@ -259,6 +259,21 @@ def build_parser():
     face_bench = face_sub.add_parser("benchmark", help="Run latency, CPU and RAM benchmark")
     face_bench.add_argument("path", help="Sample image file path")
 
+    # === STATS MODULE ===
+    stats_p = subparsers.add_parser("stats", help="Token, latency and cost ROI intelligence")
+    stats_sub = stats_p.add_subparsers(dest="action")
+
+    stats_sess = stats_sub.add_parser("session", help="Analyze token & ROI savings for a session")
+    stats_sess.add_argument("target_session", nargs="?", default=None, help="Target session ID")
+    stats_sess.add_argument("--format", choices=["table", "json"], default="table", help="Output format")
+
+    stats_sum = stats_sub.add_parser("summary", help="Summarize overall ROI across recent sessions")
+    stats_sum.add_argument("-n", "--limit", type=int, default=15, help="Number of sessions to analyze")
+    stats_sum.add_argument("--format", choices=["table", "json"], default="table", help="Output format")
+
+    stats_cmp = stats_sub.add_parser("compare", help="Compare a specific tool efficiency vs Raw LLM")
+    stats_cmp.add_argument("--tool", default="face", help="Tool name to compare (e.g. face, media, code, doc)")
+
     return parser
 
 
@@ -470,6 +485,17 @@ def main():
                 else:
                     emit_result(None, success=False, error=f"Noma'lum face buyrug'i: {args.action}")
                     exit_code = 1
+
+        elif args.module == "stats":
+            if args.action == "session":
+                stats_tool.run_stats_session(args)
+            elif args.action == "compare":
+                stats_tool.run_stats_compare(args)
+            elif args.action == "summary" or not args.action:
+                stats_tool.run_stats_summary(args)
+            else:
+                args.target_session = args.action
+                stats_tool.run_stats_session(args)
 
         else:
             emit_result(None, success=False, error=f"Noma'lum modul: {args.module}")

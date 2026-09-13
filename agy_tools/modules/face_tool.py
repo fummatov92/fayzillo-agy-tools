@@ -79,6 +79,51 @@ def get_face_describe():
         }
     }
 
+def align_to_square(pil_img: Image.Image) -> Image.Image:
+    """Aligns any rectangular image to a 1:1 square canvas with neutral padding."""
+    w, h = pil_img.size
+    if w == h:
+        return pil_img
+    size = max(w, h)
+    canvas = Image.new("RGB", (size, size), (128, 128, 128))
+    paste_x = (size - w) // 2
+    paste_y = (size - h) // 2
+    canvas.paste(pil_img, (paste_x, paste_y))
+    return canvas
+
+
+def align_square_crop(pil_img: Image.Image, box: list, margin: float = 1.25) -> Image.Image:
+    """Crops a face box with 1:1 aspect ratio and margin padding, preserving facial geometry."""
+    orig_w, orig_h = pil_img.size
+    x1, y1, x2, y2 = box
+    w = max(1, x2 - x1)
+    h = max(1, y2 - y1)
+    cx = (x1 + x2) / 2.0
+    cy = (y1 + y2) / 2.0
+    size = max(16, int(max(w, h) * margin))
+
+    sq_x1 = int(cx - size / 2.0)
+    sq_y1 = int(cy - size / 2.0)
+    sq_x2 = sq_x1 + size
+    sq_y2 = sq_y1 + size
+
+    canvas = Image.new("RGB", (size, size), (128, 128, 128))
+
+    src_x1 = max(0, sq_x1)
+    src_y1 = max(0, sq_y1)
+    src_x2 = min(orig_w, sq_x2)
+    src_y2 = min(orig_h, sq_y2)
+
+    dst_x1 = src_x1 - sq_x1
+    dst_y1 = src_y1 - sq_y1
+
+    if src_x2 > src_x1 and src_y2 > src_y1:
+        crop = pil_img.crop((src_x1, src_y1, src_x2, src_y2))
+        canvas.paste(crop, (dst_x1, dst_y1))
+
+    return canvas.resize((112, 112), Image.Resampling.BILINEAR)
+
+
 class FacePipeline:
     def __init__(self, db_path: str = None, key_path: str = None):
         if ort is None:
@@ -96,9 +141,9 @@ class FacePipeline:
         self.key_path = key_path or KEY_FILE_PATH
         self.fernet = Fernet(get_or_create_encryption_key(self.key_path))
         
-        self.conf_threshold = 0.7
+        self.conf_threshold = 0.50
         self.iou_threshold = 0.4
-        self.match_threshold = 0.55
+        self.match_threshold = 0.50
         
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = 1
@@ -179,7 +224,7 @@ class FacePipeline:
             indices = remaining[ious < self.iou_threshold]
         return keep
 
-    def detect_faces(self, pil_img: Image.Image):
+    def detect_faces(self, pil_img: Image.Image, conf_threshold: float = None):
         orig_w, orig_h = pil_img.size
         img_resized = pil_img.resize((320, 240), Image.Resampling.BILINEAR)
         img_np = np.array(img_resized, dtype=np.float32)
@@ -192,7 +237,8 @@ class FacePipeline:
         boxes_raw = outputs[1][0]
 
         face_scores = scores_raw[:, 1]
-        mask = face_scores > self.conf_threshold
+        threshold = conf_threshold if conf_threshold is not None else self.conf_threshold
+        mask = face_scores > threshold
         filtered_scores = face_scores[mask]
         filtered_boxes = boxes_raw[mask]
 
@@ -213,26 +259,19 @@ class FacePipeline:
         for idx in keep_idx:
             box = scaled_boxes[idx].tolist()
             score = float(filtered_scores[idx])
-            w = box[2] - box[0]
-            h = box[3] - box[1]
-            pad_x = int(w * 0.1)
-            pad_y = int(h * 0.1)
-            crop_x1 = max(0, box[0] - pad_x)
-            crop_y1 = max(0, box[1] - pad_y)
-            crop_x2 = min(orig_w, box[2] + pad_x)
-            crop_y2 = min(orig_h, box[3] + pad_y)
-
-            face_crop = pil_img.crop((crop_x1, crop_y1, crop_x2, crop_y2))
+            aligned_crop = align_square_crop(pil_img, box, margin=1.25)
             results.append({
                 "box": box,
                 "score": round(score, 4),
-                "crop": face_crop
+                "crop": aligned_crop
             })
         return results
 
     def extract_embedding(self, pil_face: Image.Image) -> np.ndarray:
-        face_resized = pil_face.resize((112, 112), Image.Resampling.BILINEAR)
-        img_np = np.array(face_resized, dtype=np.float32)
+        if pil_face.size != (112, 112):
+            pil_face = align_to_square(pil_face)
+            pil_face = pil_face.resize((112, 112), Image.Resampling.BILINEAR)
+        img_np = np.array(pil_face, dtype=np.float32)
         img_np = (img_np - 127.5) / 128.0
         img_np = np.transpose(img_np, (2, 0, 1))
         img_tensor = np.expand_dims(img_np, axis=0)
@@ -253,11 +292,23 @@ class FacePipeline:
 
         safe_path = safe_jail_path(image_path)
         img = Image.open(safe_path).convert("RGB")
-        faces = self.detect_faces(img)
+        
+        # 1. Primary detection with standard threshold
+        faces = self.detect_faces(img, conf_threshold=self.conf_threshold)
         if not faces:
-            embedding = self.extract_embedding(img)
-            box = [0, 0, img.size[0], img.size[1]]
-            score = 1.0
+            # 2. Adaptive fallback threshold
+            faces = self.detect_faces(img, conf_threshold=0.35)
+
+        if not faces:
+            # 3. Square centered crop fallback
+            w, h = img.size
+            min_dim = min(w, h)
+            cx, cy = w // 2, h // 2
+            center_crop = img.crop((cx - min_dim // 2, cy - min_dim // 2, cx + min_dim // 2, cy + min_dim // 2))
+            aligned_crop = center_crop.resize((112, 112), Image.Resampling.BILINEAR)
+            embedding = self.extract_embedding(aligned_crop)
+            box = [cx - min_dim // 2, cy - min_dim // 2, cx + min_dim // 2, cy + min_dim // 2]
+            score = 0.50
         else:
             best_face = max(faces, key=lambda x: x["score"])
             embedding = self.extract_embedding(best_face["crop"])
@@ -369,7 +420,9 @@ class FacePipeline:
         img = Image.open(safe_path).convert("RGB")
         
         t0 = time.perf_counter()
-        faces = self.detect_faces(img)
+        faces = self.detect_faces(img, conf_threshold=self.conf_threshold)
+        if not faces:
+            faces = self.detect_faces(img, conf_threshold=0.35)
         t_detect = (time.perf_counter() - t0) * 1000
 
         results = []

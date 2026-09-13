@@ -4,7 +4,7 @@ import shutil
 import unittest
 import json
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -106,6 +106,52 @@ class TestFaceTool(unittest.TestCase):
         # Verify plain-text file was removed and encrypted file was created
         self.assertFalse(os.path.exists(legacy_json))
         self.assertTrue(os.path.exists(target_enc))
+
+    def test_08_image_variations_robustness(self):
+        # Create a structured realistic face
+        img = Image.new("RGB", (400, 400), (235, 235, 235))
+        draw = ImageDraw.Draw(img)
+        draw.ellipse([90, 60, 310, 340], fill=(215, 175, 135))
+        draw.ellipse([130, 130, 175, 165], fill=(45, 25, 15))
+        draw.ellipse([225, 130, 270, 165], fill=(45, 25, 15))
+        draw.polygon([(200, 160), (185, 220), (215, 220)], fill=(195, 145, 105))
+        draw.ellipse([155, 250, 245, 280], fill=(175, 45, 45))
+
+        orig_path = os.path.join(TEST_TEMP_DIR, "orig.jpg")
+        img.save(orig_path, quality=95)
+
+        # 1. Enroll
+        self.pipeline.enroll("Fayzillo", orig_path, consent_confirmed=True)
+
+        # 2. Test PIL load and re-save (re-encoding without resize)
+        resaved_path = os.path.join(TEST_TEMP_DIR, "resaved_pil.jpg")
+        Image.open(orig_path).save(resaved_path, quality=95)
+        res_pil = self.pipeline.identify_image(resaved_path)
+        self.assertEqual(res_pil["faces_found"], 1)
+        self.assertEqual(res_pil["faces"][0]["identity"], "Fayzillo")
+        self.assertTrue(res_pil["faces"][0]["is_verified"])
+        self.assertGreaterEqual(res_pil["faces"][0]["similarity"], 0.90)
+
+        # 3. Test various JPEG qualities (70, 85, 95)
+        for q in [70, 85, 95]:
+            q_path = os.path.join(TEST_TEMP_DIR, f"q{q}.jpg")
+            Image.open(orig_path).save(q_path, quality=q)
+            res_q = self.pipeline.identify_image(q_path)
+            self.assertEqual(res_q["faces_found"], 1)
+            self.assertEqual(res_q["faces"][0]["identity"], "Fayzillo")
+            self.assertTrue(res_q["faces"][0]["is_verified"])
+            self.assertGreaterEqual(res_q["faces"][0]["similarity"], 0.90)
+
+        # 4. Test slight resize variations (±10%)
+        for scale, label in [(1.1, "plus10"), (0.9, "minus10")]:
+            res_path = os.path.join(TEST_TEMP_DIR, f"resize_{label}.jpg")
+            new_size = (int(400 * scale), int(400 * scale))
+            Image.open(orig_path).resize(new_size, Image.Resampling.BILINEAR).save(res_path, quality=90)
+            res_scale = self.pipeline.identify_image(res_path)
+            self.assertEqual(res_scale["faces_found"], 1)
+            self.assertEqual(res_scale["faces"][0]["identity"], "Fayzillo")
+            self.assertTrue(res_scale["faces"][0]["is_verified"])
+            self.assertGreaterEqual(res_scale["faces"][0]["similarity"], 0.90)
 
 if __name__ == "__main__":
     unittest.main()

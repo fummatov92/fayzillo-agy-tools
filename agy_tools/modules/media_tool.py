@@ -9,10 +9,13 @@ import struct
 import tarfile
 import zipfile
 import subprocess
+import logging
 from pathlib import Path
 from collections import Counter
 
 from agy_tools.utils import emit_progress, emit_result, safe_jail_path
+
+logger = logging.getLogger("agy_tools.media")
 
 
 DEFAULT_TEMP_MEDIA_DIR = "/home/fayzillo/Desktop/temp/media_artifacts"
@@ -361,24 +364,27 @@ def transcribe_audio_segment(wav_path: str, language: str = "uz-UZ") -> str:
     """Transcribes an audio chunk using speech_recognition or offline fallback."""
     try:
         import speech_recognition as sr
+    except ImportError as e:
+        logger.warning(f"STT xato: speech_recognition moduli topilmadi ({e})")
+        return ""
+
+    try:
         r = sr.Recognizer()
         with sr.AudioFile(wav_path) as source:
             audio_data = r.record(source)
             try:
-                # Try google online recognizer
                 text = r.recognize_google(audio_data, language=language)
                 return text.strip()
-            except Exception:
-                pass
-            # Try english fallback if uz fails or no internet
-            if language != "en-US":
-                try:
-                    text = r.recognize_google(audio_data, language="en-US")
-                    return text.strip()
-                except Exception:
-                    pass
-    except Exception:
-        pass
+            except Exception as e:
+                logger.warning(f"STT xato ({language}): {e}")
+                if language != "en-US":
+                    try:
+                        text = r.recognize_google(audio_data, language="en-US")
+                        return text.strip()
+                    except Exception as e_en:
+                        logger.warning(f"STT xato (en-US fallback): {e_en}")
+    except Exception as e:
+        logger.warning(f"STT xato: {e}")
     return ""
 
 

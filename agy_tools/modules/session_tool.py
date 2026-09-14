@@ -86,6 +86,93 @@ class SessionInspector:
             "last_assistant_snippet": last_assistant_response[:400] if last_assistant_response else ""
         }
 
+    def diff_turn(self, session_id: str, turn_index: int = -1):
+        t_path, real_id = get_transcript_path(session_id)
+        if not t_path or not os.path.exists(t_path):
+            return {
+                "error": f"Sessiya transkripti topilmadi: {session_id}"
+            }
+
+        records = []
+        with open(t_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except Exception:
+                    pass
+
+        user_turn_indices = []
+        for i, r in enumerate(records):
+            if r.get("type") == "USER_INPUT" or r.get("source") == "USER_EXPLICIT":
+                user_turn_indices.append(i)
+
+        if not user_turn_indices:
+            return {"error": "Sessiyada foydalanuvchi so'rovlari topilmadi."}
+
+        if turn_index < 0:
+            target_idx = len(user_turn_indices) + turn_index
+        else:
+            target_idx = turn_index
+
+        if target_idx < 0 or target_idx >= len(user_turn_indices):
+            return {"error": f"Noto'g'ri turn indeksi: {turn_index}. Mavjud turnlar: 0 dan {len(user_turn_indices)-1} gacha."}
+
+        start_rec_idx = user_turn_indices[target_idx]
+        end_rec_idx = user_turn_indices[target_idx + 1] if target_idx + 1 < len(user_turn_indices) else len(records)
+
+        turn_records = records[start_rec_idx:end_rec_idx]
+        user_prompt_rec = records[start_rec_idx]
+        prompt_text = clean_user_prompt(user_prompt_rec.get("content", ""))
+
+        start_time = user_prompt_rec.get("created_at")
+        last_rec = turn_records[-1] if turn_records else user_prompt_rec
+        end_time = last_rec.get("created_at")
+
+        duration_sec = 0
+        if start_time and end_time:
+            try:
+                t1 = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+                t2 = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+                duration_sec = max(0, int((t2 - t1).total_seconds()))
+            except Exception:
+                pass
+
+        tool_counts = {}
+        total_chars = 0
+        steps_count = len(turn_records)
+        last_assistant_snippet = ""
+
+        for r in turn_records:
+            content = r.get("content") or ""
+            thinking = r.get("thinking") or ""
+            tool_calls = r.get("tool_calls") or []
+            total_chars += len(content) + len(thinking) + len(str(tool_calls))
+            if tool_calls:
+                for tc in tool_calls:
+                    name = tc.get("name") or tc.get("function", {}).get("name") or "unknown"
+                    tool_counts[name] = tool_counts.get(name, 0) + 1
+            if r.get("type") == "PLANNER_RESPONSE" and content:
+                last_assistant_snippet = content
+
+        est_tokens = round(total_chars / 3.8)
+
+        return {
+            "conversation_id": real_id,
+            "turn_index": target_idx,
+            "total_turns": len(user_turn_indices),
+            "prompt": prompt_text,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration_seconds": duration_sec,
+            "steps_in_turn": steps_count,
+            "tool_counts": tool_counts,
+            "total_chars": total_chars,
+            "estimated_tokens": est_tokens,
+            "last_assistant_snippet": last_assistant_snippet[:300] if last_assistant_snippet else ""
+        }
+
     def list_sessions(self, limit: int = 15, search: str = None):
         sessions = []
         if os.path.exists(DB_PATH):
@@ -507,3 +594,46 @@ def run_session_export(args):
         "turns_count": len(dialogue),
         "format": out_fmt
     })
+
+
+def run_session_diff(args):
+    """Analyze execution time, steps and token consumption for a single turn."""
+    session_id = getattr(args, "session_id_arg", None)
+    if not session_id:
+        emit_result(None, success=False, error="Sessiya ID ko'rsatilmadi!")
+        return
+
+    turn_idx = -1
+    if hasattr(args, "turn") and args.turn is not None:
+        turn_idx = args.turn - 1  # 1-indexed to 0-indexed
+
+    out_fmt = getattr(args, "format", "table")
+    emit_progress("Analyzing Turn Diff", 15, f"{session_id} sessiyasi turn tahlili boshlanmoqda...")
+    
+    inspector = SessionInspector()
+    result = inspector.diff_turn(session_id, turn_idx)
+    
+    if "error" in result:
+        emit_result(None, success=False, error=result["error"])
+        return
+
+    emit_progress("Analyzing Turn Diff", 100, "Turn tahlili yakunlandi.")
+
+    if out_fmt == "table":
+        m, s = divmod(result["duration_seconds"], 60)
+        dur_str = f"{m}m {s}s" if m > 0 else f"{s}s"
+        print(f"\n=== VAZIFA METRIKASI: {result['conversation_id']} (Turn #{result['turn_index'] + 1}/{result['total_turns']}) ===")
+        print(f"💬 Prompt: \"{result['prompt'][:100]}\"")
+        print(f"⏱ Vaqt: {result['start_time']} -> {result['end_time']} (Davomiyligi: {dur_str})")
+        print(f"📑 Qadamlar soni (Steps): {result['steps_in_turn']} ta")
+        print(f"🧠 Taxminiy token sarfi: ~{result['estimated_tokens']:,} token ({result['total_chars']:,} belgi)")
+        print("\n🛠 Ishlatilgan vositalar:")
+        if result["tool_counts"]:
+            for k, v in sorted(result["tool_counts"].items(), key=lambda x: x[1], reverse=True):
+                print(f"  • {k:<22}: {v} marta")
+        else:
+            print("  • (To'g'ridan-to'g'ri javob / Instrumentlar ishlatilmagan)")
+        print("-" * 75)
+
+    emit_result(result)
+

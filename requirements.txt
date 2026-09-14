@@ -1,4 +1,19 @@
+# ============================================================================
+# fayzillo-agy-tools — Python Dependencies
+# ============================================================================
+
+# 1. Image & Multimodal Processing (media, super-media)
+Pillow>=10.0.0
+
+# 2. Numerical Arrays & Perceptual dHash Calculations (face, super-media)
+numpy>=1.24.0
+
+# 3. Ultra-Lightweight Neural Net Inference (face module - MobileFaceNet CPU)
 onnxruntime>=1.16.0
-pillow>=9.5.0
-numpy>=1.21.6
-mutagen>=1.46.0
+
+# 4. Biometric Symmetric Encryption (AES-256 Fernet PBKDF2) (face module)
+cryptography>=41.0.0
+
+# 5. HTTP & API Integrations (doc probe module)
+requests>=2.31.0
+urllib3>=2.0.0

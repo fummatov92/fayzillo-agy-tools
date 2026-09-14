@@ -9,7 +9,7 @@ def get_secure_describe():
         "description": "Loglar, konfiguratsiyalar va fayllardagi maxfiy ma'lumotlarni (parollar, tokenlar, kalitlar) tekshirish va xavfsiz tozalash vositasi.",
         "commands": {
             "scan": "Fayl yoki jilddagi potentsial maxfiy sirlarni qidirish (dry-run)",
-            "redact": "Ko'rsatilgan fayl ichidagi sirlarni [REDACTED_...] bilan xavfsiz almashtirish"
+            "redact": "Ko'rsatilgan fayl yoki jild ichidagi sirlarni [REDACTED_...] bilan xavfsiz almashtirish"
         }
     }
 
@@ -57,6 +57,20 @@ def redact_text(content: str) -> tuple[str, int]:
         
     return content, redacted_count
 
+IGNORED_DIRS = {
+    "node_modules", ".git", "dist", "build", ".next", ".angular", "vendor",
+    "__pycache__", ".venv", "venv", "site-packages", ".agents", "target", "out", ".turbo", ".cache"
+}
+
+IGNORED_FILE_PREFIXES = (".env",)
+ALLOWED_EXTENSIONS = (".jsonl", ".log", ".txt", ".json", ".md", ".yml", ".yaml", ".pbtxt")
+
+def is_ignored_file(filename: str) -> bool:
+    """Checks if a file should be ignored during directory security scans/redactions."""
+    if filename.startswith(IGNORED_FILE_PREFIXES) or filename.endswith(".env"):
+        return True
+    return False
+
 def run_secure_scan(args):
     """Scan files for secrets."""
     emit_progress("Scanning Secrets", 20, "Fayllar tekshirilmoqda...")
@@ -70,9 +84,12 @@ def run_secure_scan(args):
         targets = [target]
     else:
         targets = []
-        for root, _, files in os.walk(target):
+        for root, dirs, files in os.walk(target):
+            dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
             for f in files:
-                if f.endswith((".jsonl", ".log", ".env", ".txt", ".json", ".md", ".yml", ".yaml")):
+                if is_ignored_file(f):
+                    continue
+                if f.endswith(ALLOWED_EXTENSIONS):
                     targets.append(os.path.join(root, f))
                     
     for i, fpath in enumerate(targets):
@@ -119,41 +136,69 @@ def run_secure_scan(args):
     })
 
 def run_secure_redact(args):
-    """Redact secrets in target file atomically."""
-    emit_progress("Redacting Secrets", 30, "Maxfiy ma'lumotlar tozalanmoqda...")
+    """Redact secrets in target file or directory recursively."""
+    emit_progress("Redacting Secrets", 20, "Maxfiy ma'lumotlar tozalanmoqda...")
     target = safe_jail_path(args.path)
     
     if not os.path.exists(target):
-        raise FileNotFoundError(f"Fayl topilmadi: '{target}'")
-    if not os.path.isfile(target):
-        raise IsADirectoryError(f"Ko'rsatilgan yo'l fayl emas: '{target}'")
+        raise FileNotFoundError(f"Fayl yoki jild topilmadi: '{target}'")
         
-    with open(target, "r", encoding="utf-8", errors="ignore") as f:
-        content = f.read()
-        
-    redacted_content, redacted_count = redact_text(content)
-    
     dry_run = getattr(args, 'dry_run', False)
-    if not dry_run:
-        target_dir = os.path.dirname(target) or "."
-        tmp_file = os.path.join(target_dir, f".tmp_{os.path.basename(target)}.{os.getpid()}")
+    
+    if os.path.isfile(target):
+        targets = [target]
+        is_dir = False
+    else:
+        is_dir = True
+        targets = []
+        for root, dirs, files in os.walk(target):
+            dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
+            for f in files:
+                if is_ignored_file(f):
+                    continue
+                if f.endswith(ALLOWED_EXTENSIONS):
+                    targets.append(os.path.join(root, f))
+                    
+    total_redacted = 0
+    redacted_files_count = 0
+    
+    for fpath in targets:
         try:
-            with open(tmp_file, "w", encoding="utf-8") as f:
-                f.write(redacted_content)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_file, target)
-        except Exception:
-            if os.path.exists(tmp_file):
-                try:
-                    os.remove(tmp_file)
-                except Exception:
-                    pass
-            raise
+            with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+                
+            redacted_content, count = redact_text(content)
+            if count > 0:
+                total_redacted += count
+                redacted_files_count += 1
+                if not dry_run:
+                    target_dir = os.path.dirname(fpath) or "."
+                    tmp_file = os.path.join(target_dir, f".tmp_{os.path.basename(fpath)}.{os.getpid()}")
+                    try:
+                        with open(tmp_file, "w", encoding="utf-8") as f:
+                            f.write(redacted_content)
+                            f.flush()
+                            os.fsync(f.fileno())
+                        os.replace(tmp_file, fpath)
+                    except Exception:
+                        if os.path.exists(tmp_file):
+                            try:
+                                os.remove(tmp_file)
+                            except Exception:
+                                pass
+                        raise
+        except Exception as e:
+            if not is_dir:
+                raise e
             
     emit_progress("Done", 100, "Tozalash yakunlandi.")
     emit_result({
-        "file": target,
-        "redacted_items": redacted_count,
+        "target": target,
+        "is_directory": is_dir,
+        "scanned_files_count": len(targets),
+        "redacted_files_count": redacted_files_count,
+        "redacted_items": total_redacted,
         "dry_run": dry_run
     })
+
+

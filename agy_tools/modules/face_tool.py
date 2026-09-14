@@ -27,12 +27,13 @@ APP_DATA_DIR = os.path.expanduser("~/.gemini/antigravity-cli")
 DEFAULT_DB_PATH = os.path.join(APP_DATA_DIR, "faces_db.enc")
 LEGACY_DB_PATH = os.path.join(APP_DATA_DIR, "faces_db.json")
 KEY_FILE_PATH = os.path.join(APP_DATA_DIR, ".face_key")
+SALT_FILE_PATH = os.path.join(APP_DATA_DIR, ".face_salt")
 
 def get_or_create_encryption_key(key_path: str = None) -> bytes:
     """
     Retrieves or generates a secure Fernet symmetric encryption key for biometric data.
     Priority:
-      1. AGY_BIOMETRIC_SECRET env var (derived via PBKDF2)
+      1. AGY_BIOMETRIC_SECRET env var (derived via PBKDF2 with random persistent salt)
       2. Key file on disk (~/.gemini/antigravity-cli/.face_key with chmod 0600)
     """
     if Fernet is None:
@@ -40,10 +41,24 @@ def get_or_create_encryption_key(key_path: str = None) -> bytes:
         
     env_secret = os.environ.get("AGY_BIOMETRIC_SECRET")
     if env_secret:
+        target_salt_file = os.path.join(os.path.dirname(key_path or KEY_FILE_PATH), ".face_salt")
+        if os.path.exists(target_salt_file):
+            with open(target_salt_file, "rb") as f:
+                salt = f.read().strip()
+        else:
+            os.makedirs(os.path.dirname(target_salt_file), exist_ok=True)
+            salt = os.urandom(16)
+            with open(target_salt_file, "wb") as f:
+                f.write(salt)
+            try:
+                os.chmod(target_salt_file, 0o600)
+            except Exception:
+                pass
+
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
-            salt=b"agy_biometric_salt_fixed_v1",
+            salt=salt,
             iterations=100000,
         )
         return base64.urlsafe_b64encode(kdf.derive(env_secret.encode()))

@@ -11,7 +11,7 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool, doc_tool, media_tool, session_tool, super_media_tool, face_tool, stats_tool
+from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool, doc_tool, media_tool, session_tool, super_media_tool, face_tool, stats_tool, bot_tool
 from agy_tools.utils import emit_result, set_checkpoint_hook, set_result_hook
 from agy_tools.logger import RunLogger, get_logger
 
@@ -105,9 +105,9 @@ def build_parser():
     sec_scan = sec_sub.add_parser("scan", help="Scan files for leaked credentials")
     sec_scan.add_argument("path", help="Target file or directory")
 
-    sec_redact = sec_sub.add_parser("redact", help="Redact secrets in place")
-    sec_redact.add_argument("path", help="Target file path")
-    sec_redact.add_argument("--dry-run", action="store_true", help="Do not overwrite file")
+    sec_redact = sec_sub.add_parser("redact", help="Redact secrets in place (file or directory)")
+    sec_redact.add_argument("path", help="Target file or directory path")
+    sec_redact.add_argument("--dry-run", action="store_true", help="Do not overwrite files")
 
     # === DEBUG MODULE ===
     dbg_p = subparsers.add_parser("debug", help="Error log diagnosis, stacktrace parser and typecheck")
@@ -118,6 +118,10 @@ def build_parser():
 
     dbg_chk = dbg_sub.add_parser("check", help="Fast syntax / typecheck")
     dbg_chk.add_argument("path", nargs="?", default=".", help="Target project directory")
+
+    dbg_bot = dbg_sub.add_parser("bot", help="Sandboxed syntax, handler & script verification of Telegram bot")
+    dbg_bot.add_argument("path", nargs="?", default="/home/fayzillo/Desktop/sessiya_connector/bot", help="Bot directory path")
+    dbg_bot.add_argument("--format", choices=["table", "json"], default="table", help="Output format")
 
     # === DOC MODULE ===
     doc_p = subparsers.add_parser("doc", help="Multi-Framework Zero-Token API Kontrakt & DTO Generator")
@@ -203,6 +207,12 @@ def build_parser():
     sess_qry.add_argument("query", help="Keyword or phrase to search")
     sess_qry.add_argument("--format", choices=["table", "json"], default="table", help="Output format")
 
+    sess_diff = sess_sub.add_parser("diff", help="Analyze timing, steps and token consumption for a specific turn")
+    sess_diff.add_argument("session_id_arg", nargs="?", default=None, help="Target session ID")
+    sess_diff.add_argument("-t", "--turn", type=int, default=None, help="1-indexed turn number (default: last turn)")
+    sess_diff.add_argument("--last", action="store_true", help="Analyze last turn")
+    sess_diff.add_argument("--format", choices=["table", "json"], default="table", help="Output format")
+
     # === SUPER-MEDIA MODULE ===
     smed_p = subparsers.add_parser("super-media", aliases=["super_media"], help="Super Media Intelligence (Video reducer & timeline sync, categorized archive, pipeline)")
     smed_sub = smed_p.add_subparsers(dest="action")
@@ -274,6 +284,26 @@ def build_parser():
     stats_cmp = stats_sub.add_parser("compare", help="Compare a specific tool efficiency vs Raw LLM")
     stats_cmp.add_argument("--tool", default="face", help="Tool name to compare (e.g. face, media, code, doc)")
 
+    # === BOT MODULE ===
+    bot_p = subparsers.add_parser("bot", help="JarvisOS Telegram Bot dynamic handlers & plugin manager")
+    bot_sub = bot_p.add_subparsers(dest="action")
+
+    bot_ls = bot_sub.add_parser("list", help="List all active dynamic handlers")
+    bot_ls.add_argument("-d", "--dir", default="/home/fayzillo/Desktop/sessiya_connector/bot/handlers", help="Handlers directory")
+
+    bot_add = bot_sub.add_parser("add", help="Add a new isolated modular handler")
+    bot_add.add_argument("name", help="Handler command name (e.g. speedtest, custom)")
+    bot_add.add_argument("--type", choices=["command", "action", "hears"], default="command", help="Handler type")
+    bot_add.add_argument("--desc", default="", help="Description of the handler")
+    bot_add.add_argument("-d", "--dir", default="/home/fayzillo/Desktop/sessiya_connector/bot/handlers", help="Handlers directory")
+
+    bot_rm = bot_sub.add_parser("remove", aliases=["rm"], help="Remove a modular handler")
+    bot_rm.add_argument("name", help="Handler name to remove")
+    bot_rm.add_argument("-d", "--dir", default="/home/fayzillo/Desktop/sessiya_connector/bot/handlers", help="Handlers directory")
+
+    bot_chk = bot_sub.add_parser("check", help="Validate syntax across all handlers")
+    bot_chk.add_argument("-d", "--dir", default="/home/fayzillo/Desktop/sessiya_connector/bot/handlers", help="Handlers directory")
+
     return parser
 
 
@@ -343,7 +373,8 @@ def main():
                     "media": media_tool.get_media_describe(),
                     "session": session_tool.get_session_describe(),
                     "super_media": super_media_tool.get_super_media_describe(),
-                    "face": face_tool.get_face_describe()
+                    "face": face_tool.get_face_describe(),
+                    "bot": bot_tool.get_bot_describe()
                 }
             }
             emit_result(capabilities)
@@ -389,6 +420,8 @@ def main():
         elif args.module == "debug":
             if args.action == "trace":
                 debug_tool.run_debug_trace(args)
+            elif args.action == "bot":
+                debug_tool.run_bot_test(args)
             elif args.action == "check" or not args.action:
                 debug_tool.run_debug_check(args)
             else:
@@ -403,6 +436,8 @@ def main():
                 session_tool.run_session_list(args)
             elif args.action == "inspect":
                 session_tool.run_session_inspect(args)
+            elif args.action == "diff":
+                session_tool.run_session_diff(args)
             elif args.action == "query":
                 session_tool.run_session_query(args)
             elif args.action == "export":
@@ -496,6 +531,20 @@ def main():
             else:
                 args.target_session = args.action
                 stats_tool.run_stats_session(args)
+
+        elif args.module == "bot":
+            handlers_dir = getattr(args, "dir", "/home/fayzillo/Desktop/sessiya_connector/bot/handlers")
+            if args.action == "add":
+                bot_tool.add_handler(args.name, getattr(args, "type", "command"), getattr(args, "desc", ""), handlers_dir)
+            elif args.action in ["remove", "rm"]:
+                bot_tool.remove_handler(args.name, handlers_dir)
+            elif args.action == "check":
+                bot_tool.check_handlers(handlers_dir)
+            elif args.action == "list" or not args.action:
+                bot_tool.list_handlers(handlers_dir)
+            else:
+                emit_result(None, success=False, error=f"Noma'lum bot buyrug'i: {args.action}")
+                exit_code = 1
 
         else:
             emit_result(None, success=False, error=f"Noma'lum modul: {args.module}")

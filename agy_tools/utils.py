@@ -1,6 +1,8 @@
 import json
 import sys
 import os
+import urllib.parse
+from agy_tools import config
 
 _checkpoint_hook = None
 _result_hook = None
@@ -16,14 +18,13 @@ def set_result_hook(fn):
     _result_hook = fn
 
 def emit_progress(step: str, pct: int, detail: str = ""):
-    """Emits live NDJSON progress event to stdout if interactive or requested."""
+    """Emits live NDJSON progress event to stderr."""
     payload = {
         "event": "progress",
         "step": step,
         "pct": pct,
         "detail": detail
     }
-    # Print as a single compact JSON line
     print(json.dumps(payload), file=sys.stderr, flush=True)
     if _checkpoint_hook is not None:
         try:
@@ -49,17 +50,13 @@ def emit_result(data: dict, success: bool = True, error: str = None):
             _result_hook(data, success, error)
         except Exception:
             pass
+    return out
 
 def safe_jail_path(path: str, base_dir: str = None) -> str:
-    """Ensures paths are strictly within safe directories (/home/fayzillo/Desktop and ~/.local)."""
+    """Ensures paths are strictly within configured safe directories (default: Desktop, ~/.local, ~/.gemini, Downloads)."""
     abs_path = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
     
-    desktop_dir = os.path.realpath("/home/fayzillo/Desktop")
-    local_dir = os.path.realpath(os.path.expanduser("~/.local"))
-    gemini_dir = os.path.realpath(os.path.expanduser("~/.gemini/antigravity-cli"))
-    brains_dir = os.path.realpath(os.path.expanduser("~/Downloads/brains"))
-    
-    allowed_dirs = [desktop_dir, local_dir, gemini_dir, brains_dir]
+    allowed_dirs = list(config.ALLOWED_DIRS)
     if base_dir:
         allowed_dirs.append(os.path.realpath(os.path.abspath(os.path.expanduser(base_dir))))
         
@@ -73,18 +70,18 @@ def safe_jail_path(path: str, base_dir: str = None) -> str:
             continue
             
     if not is_safe:
-        raise PermissionError(f"Xavfsizlik cheklovi: '{path}' ruxsat etilgan jildlardan tashqarida!")
+        raise PermissionError(f"Xavfsizlik cheklovi: '{path}' ruxsat etilgan jildlardan tashqarida! (Ruxsat: {allowed_dirs})")
     return abs_path
 
-ALLOWED_PORT_RANGE = (15800, 15900)
+ALLOWED_PORT_RANGE = (config.PORT_RANGE_START, config.PORT_RANGE_END)
 FORBIDDEN_SYSTEM_PORTS = {80, 443, 3000, 3306, 4000, 5432, 5433, 6379, 8080, 8090, 9000, 27017}
 
 def validate_safe_port(port: int, allow_range: tuple = ALLOWED_PORT_RANGE) -> bool:
-    """Validates that a port is strictly within the allowed JarvisOS range (15800-15900)."""
+    """Validates that a port is strictly within the allowed range."""
     if port in FORBIDDEN_SYSTEM_PORTS or not (allow_range[0] <= port <= allow_range[1]):
         raise PermissionError(
             f"Xavfsizlik cheklovi: Port {port} taqiqlangan! "
-            f"Sandbox va Dev muhit portlari FAQAT {allow_range[0]}-{allow_range[1]} oralig'ida bo'lishi shart."
+            f"Portlar FAQAT {allow_range[0]}-{allow_range[1]} oralig'ida bo'lishi shart."
         )
     return True
 
@@ -92,10 +89,7 @@ def extract_port_from_url(url: str) -> int:
     """Extracts port integer from a given URL or host:port string, returning None if not found."""
     if not url:
         return None
-    import urllib.parse
     parsed = urllib.parse.urlparse(url if "://" in url else f"http://{url}")
     if parsed.port:
         return parsed.port
     return None
-
-

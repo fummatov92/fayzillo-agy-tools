@@ -148,8 +148,11 @@ def run_debug_check(args):
     if os.path.exists(tsconfig):
         emit_progress("Running TypeCheck", 60, "TypeScript kompilyator tekshiruvi (tsc --noEmit)...")
         tsc_bin = find_tsc_binary(target_path)
-        cmd = f"{tsc_bin} --noEmit --pretty false"
-        res = subprocess.run(cmd, shell=True, cwd=target_path, capture_output=True, text=True)
+        if tsc_bin == "npx tsc":
+            cmd_args = ["npx", "tsc", "--noEmit", "--pretty", "false"]
+        else:
+            cmd_args = [tsc_bin, "--noEmit", "--pretty", "false"]
+        res = subprocess.run(cmd_args, shell=False, cwd=target_path, capture_output=True, text=True)
         if res.returncode != 0:
             errors = []
             for line in res.stdout.strip().split("\n"):
@@ -188,4 +191,98 @@ def run_debug_check(args):
     }
     emit_result(data)
     return data
+
+
+def run_bot_test(args):
+    """Sandboxed syntax, handler & script verification of Telegram bot."""
+    emit_progress("Bot Testing", 10, "Telegram Bot fayllari va sintaksisi tekshirilmoqda...")
+    bot_dir = getattr(args, "path", "/home/fayzillo/Desktop/sessiya_connector/bot") or "/home/fayzillo/Desktop/sessiya_connector/bot"
+    bot_file = os.path.join(bot_dir, "bot.js")
+    
+    if not os.path.exists(bot_file):
+        emit_result(None, success=False, error=f"Bot fayli topilmadi: {bot_file}")
+        return
+
+    checks = []
+    
+    # Check 1: bot.js syntax
+    emit_progress("Bot Testing", 30, "bot.js sintaksisi tekshirilmoqda...")
+    res1 = subprocess.run(["node", "-c", bot_file], capture_output=True, text=True)
+    if res1.returncode != 0:
+        checks.append({
+            "target": "bot.js (Node Syntax)",
+            "status": "FAIL",
+            "error": res1.stderr.strip()
+        })
+    else:
+        checks.append({
+            "target": "bot.js (Node Syntax)",
+            "status": "PASS",
+            "detail": "0 ta sintaksis xatoligi"
+        })
+
+    # Check 2: scripts/update_live_msg.js syntax
+    upd_script = os.path.join(bot_dir, "scripts", "update_live_msg.js")
+    if os.path.exists(upd_script):
+        emit_progress("Bot Testing", 60, "update_live_msg.js tekshirilmoqda...")
+        res2 = subprocess.run(["node", "-c", upd_script], capture_output=True, text=True)
+        if res2.returncode != 0:
+            checks.append({
+                "target": "scripts/update_live_msg.js",
+                "status": "FAIL",
+                "error": res2.stderr.strip()
+            })
+        else:
+            checks.append({
+                "target": "scripts/update_live_msg.js",
+                "status": "PASS",
+                "detail": "0 ta sintaksis xatoligi"
+            })
+
+    # Check 3: Handlers inspection
+    emit_progress("Bot Testing", 80, "Asosiy handlerlar mavjudligi tekshirilmoqda...")
+    with open(bot_file, "r", encoding="utf-8", errors="ignore") as f:
+        content = f.read()
+
+    handlers = {
+        "Model Failover": "MODEL_FAILOVER_MAP" in content and "isFailoverAttempt" in content,
+        "Live Progress Tracker": "startLiveProgress" in content,
+        "Handoff / Distill": "handleHandoff" in content,
+        "Context Caching": "sessionContextCache" in content and "mtimeMs" in content,
+        "PIN WAF Bridge": "approvalState" in content,
+    }
+
+    handler_status = {}
+    for h_name, present in handlers.items():
+        handler_status[h_name] = "ACTIVE" if present else "MISSING"
+
+    all_pass = all(c["status"] == "PASS" for c in checks) and all(v == "ACTIVE" for v in handler_status.values())
+
+    emit_progress("Bot Testing", 100, "Bot tekshiruvi yakunlandi.")
+    
+    out_format = getattr(args, "format", "table")
+    if out_format == "table":
+        print("\n=== TELEGRAM BOT SANDBOX TEST HISOBOTI ===")
+        print(f"📁 Bot yo'li: {bot_dir}")
+        print("\n🔍 Sintaksis Tekshiruvi:")
+        for c in checks:
+            icon = "✅" if c["status"] == "PASS" else "❌"
+            print(f"  {icon} {c['target']:<30}: {c['status']}")
+            if c.get("error"):
+                print(f"     ⚠️ Xato: {c['error']}")
+
+        print("\n🧩 Integratsiyalangan Tizimlar:")
+        for h, s in handler_status.items():
+            icon = "✅" if s == "ACTIVE" else "❌"
+            print(f"  {icon} {h:<30}: {s}")
+        print("-" * 60)
+        overall = "BARQAROR VA ISHGA SHAY ✅" if all_pass else "XATOLIKLAR TOPILDI ⚠️"
+        print(f"🏁 Yakuniy Xulosa: {overall}\n")
+
+    emit_result({
+        "all_pass": all_pass,
+        "checks": checks,
+        "handlers": handler_status
+    })
+
 

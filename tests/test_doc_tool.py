@@ -343,35 +343,31 @@ def test_modular_exporters():
         pm_file = os.path.join(tmpdir, "postman", "api_collection.json")
         export_postman_collection(sample_endpoints, pm_file, "ModularProject")
 
-        orders_md = os.path.join(tmpdir, "docs", "orders", "api_contracts.md")
-        users_md = os.path.join(tmpdir, "docs", "users", "api_contracts.md")
+        orders_md = os.path.join(tmpdir, "docs", "orders.md")
+        users_md = os.path.join(tmpdir, "docs", "users.md")
         readme_md = os.path.join(tmpdir, "docs", "README.md")
-        master_md = os.path.join(tmpdir, "docs", "api_contracts.md")
 
-        assert os.path.exists(orders_md), "orders/api_contracts.md should exist"
-        assert os.path.exists(users_md), "users/api_contracts.md should exist"
+        assert os.path.exists(orders_md), "docs/orders.md should exist"
+        assert os.path.exists(users_md), "docs/users.md should exist"
         assert os.path.exists(readme_md), "docs/README.md should exist"
-        assert os.path.exists(master_md), "docs/api_contracts.md should exist"
 
         with open(readme_md, "r") as f:
             readme_text = f.read()
             assert "Modullar Katalogi" in readme_text
-            assert "[📂 `orders/api_contracts.md`](./orders/api_contracts.md)" in readme_text
-            assert "[📂 `users/api_contracts.md`](./users/api_contracts.md)" in readme_text
+            assert "[📂 `orders.md`](./orders.md)" in readme_text
+            assert "[📂 `users.md`](./users.md)" in readme_text
 
         with open(orders_md, "r") as f:
             orders_text = f.read()
             assert "Orders Moduli" in orders_text
             assert "CreateOrderRequest" in orders_text
 
-        orders_ts = os.path.join(tmpdir, "types", "orders", "api.contracts.d.ts")
-        users_ts = os.path.join(tmpdir, "types", "users", "api.contracts.d.ts")
-        master_ts = os.path.join(tmpdir, "types", "api.contracts.d.ts")
+        orders_ts = os.path.join(tmpdir, "types", "orders.d.ts")
+        users_ts = os.path.join(tmpdir, "types", "users.d.ts")
         index_ts = os.path.join(tmpdir, "types", "index.d.ts")
 
         assert os.path.exists(orders_ts)
         assert os.path.exists(users_ts)
-        assert os.path.exists(master_ts)
         assert os.path.exists(index_ts)
 
         with open(orders_ts, "r") as f:
@@ -379,10 +375,10 @@ def test_modular_exporters():
             assert "export namespace OrdersContracts" in orders_ts_text
             assert "export interface CreateOrderRequest" in orders_ts_text
 
-        with open(master_ts, "r") as f:
-            master_ts_text = f.read()
-            assert "export namespace ApiContracts" in master_ts_text
-            assert "export interface CreateOrderRequest" in master_ts_text
+        with open(index_ts, "r") as f:
+            index_ts_text = f.read()
+            assert "export namespace ApiContracts" in index_ts_text
+            assert "export interface CreateOrderRequest" in index_ts_text
 
         assert os.path.exists(pm_file)
         with open(pm_file, "r") as f:

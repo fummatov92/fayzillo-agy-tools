@@ -11,7 +11,7 @@ parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool, doc_tool, media_tool, session_tool, super_media_tool, face_tool, stats_tool, bot_tool
+from agy_tools.modules import sys_tool, code_tool, secure_tool, debug_tool, doc_tool, media_tool, session_tool, super_media_tool, face_tool, stats_tool, bot_tool, archive_tool
 from agy_tools.utils import emit_result, set_checkpoint_hook, set_result_hook
 from agy_tools.logger import RunLogger, get_logger
 
@@ -304,6 +304,23 @@ def build_parser():
     bot_chk = bot_sub.add_parser("check", help="Validate syntax across all handlers")
     bot_chk.add_argument("-d", "--dir", default="/home/fayzillo/Desktop/sessiya_connector/bot/handlers", help="Handlers directory")
 
+    # === ARCHIVE MODULE ===
+    archive_p = subparsers.add_parser("archive", aliases=["archiver"], help="Smart ZIP & TAR Archive Manager (0-secret packing, safe unpacking & inspection)")
+    archive_sub = archive_p.add_subparsers(dest="action")
+
+    pack_p = archive_sub.add_parser("pack", help="Pack directory cleanly into ZIP archive")
+    pack_p.add_argument("source", help="Source directory to pack")
+    pack_p.add_argument("output", nargs="?", default=None, help="Optional output ZIP path")
+    pack_p.add_argument("--clean", action="store_true", default=True, help="Auto-exclude junk dirs, caches and secrets")
+    pack_p.add_argument("--exclude", default=None, help="Additional comma-separated patterns to exclude")
+
+    unpack_p = archive_sub.add_parser("unpack", help="Safely unpack ZIP/TAR archive")
+    unpack_p.add_argument("archive", help="Archive file path to extract")
+    unpack_p.add_argument("target", nargs="?", default=None, help="Target directory for extraction")
+
+    inspect_p = archive_sub.add_parser("inspect", help="Inspect archive structure (0-token blueprint)")
+    inspect_p.add_argument("archive", help="Archive file to inspect")
+
     return parser
 
 
@@ -544,6 +561,21 @@ def main():
                 bot_tool.list_handlers(handlers_dir)
             else:
                 emit_result(None, success=False, error=f"Noma'lum bot buyrug'i: {args.action}")
+                exit_code = 1
+
+        elif args.module in ["archive", "archiver"]:
+            if args.action == "pack":
+                archive_tool.pack_archive(args.source, output_path=args.output, clean=args.clean, exclude=args.exclude)
+            elif args.action == "unpack":
+                archive_tool.unpack_archive(args.archive, target_dir=args.target)
+            elif args.action == "inspect":
+                args.path = args.archive
+                super_media_tool.run_super_archive(args)
+            elif args.action and os.path.exists(args.action):
+                args.path = args.action
+                super_media_tool.run_super_archive(args)
+            else:
+                emit_result(None, success=False, error=f"Noma'lum archive buyrug'i: {args.action}")
                 exit_code = 1
 
         else:

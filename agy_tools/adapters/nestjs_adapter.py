@@ -873,7 +873,78 @@ class NestJSAdapter(BaseAdapter):
         return req_body, params, query
 
     def _infer_response_schema(self, method: str, handler: str, base_route: str) -> Dict[str, Any]:
-        """Infers realistic response schema using AST Prisma models or DTO schemas."""
+        """Infers realistic response schema using AST Prisma models, Auth JWT contracts, or DTO schemas."""
+        h_lower = (handler or "").lower()
+        route_lower = (base_route or "").lower()
+
+        # 1. Specialized Auth Handling (login, refresh, logout, me)
+        if "auth" in route_lower or any(k in h_lower for k in ["login", "refresh", "logout", "signin", "signup"]):
+            if "logout" in h_lower:
+                return {
+                    "status": 200,
+                    "type": "object",
+                    "properties": {
+                        "success": {"type": "boolean", "required": True},
+                        "message": {"type": "string", "required": True}
+                    }
+                }
+            
+            user_props = self.prisma_models.get("User", {}).get("properties", {
+                "id": {"type": "string", "required": True},
+                "login": {"type": "string", "required": True},
+                "role": {"type": "string", "required": True},
+                "companyId": {"type": "string", "required": False},
+                "firstName": {"type": "string", "required": False},
+                "lastName": {"type": "string", "required": False},
+                "email": {"type": "string", "required": False},
+                "phone": {"type": "string", "required": False},
+                "avatarUrl": {"type": "string", "required": False},
+                "isActive": {"type": "boolean", "required": True}
+            })
+
+            if any(k in h_lower for k in ["me", "current", "profile"]):
+                return {
+                    "status": 200,
+                    "type": "object",
+                    "properties": {
+                        "success": {"type": "boolean", "required": True},
+                        "data": {
+                            "type": "object",
+                            "model": "User",
+                            "required": True,
+                            "properties": user_props
+                        }
+                    }
+                }
+
+            # Login / Refresh token response
+            return {
+                "status": 200,
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean", "required": True},
+                    "data": {
+                        "type": "object",
+                        "model": "AuthTokensResponse",
+                        "required": True,
+                        "properties": {
+                            "tokenType": {"type": "string", "required": True},
+                            "accessToken": {"type": "string", "required": True},
+                            "refreshToken": {"type": "string", "required": False},
+                            "expiresIn": {"type": "number", "required": True},
+                            "user": {
+                                "type": "object",
+                                "model": "User",
+                                "required": True,
+                                "properties": user_props
+                            }
+                        }
+                    },
+                    "message": {"type": "string", "required": False}
+                }
+            }
+
+        # 2. General Model Inferences
         raw_segment = base_route.strip("/").split("/")[-1] if base_route.strip("/") else "Item"
         parts = re.split(r"[-_\s]+", raw_segment)
         clean_name = "".join(p.capitalize() for p in parts if p)
@@ -900,7 +971,7 @@ class NestJSAdapter(BaseAdapter):
             }
 
         if method == "GET":
-            if any(k in handler.lower() for k in ["list", "all", "findmany", "getall"]):
+            if any(k in h_lower for k in ["list", "all", "findmany", "getall"]):
                 return {
                     "status": 200,
                     "type": "object",

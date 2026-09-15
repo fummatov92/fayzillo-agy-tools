@@ -873,7 +873,7 @@ class NestJSAdapter(BaseAdapter):
         return req_body, params, query
 
     def _infer_response_schema(self, method: str, handler: str, base_route: str) -> Dict[str, Any]:
-        """Infers realistic response schema using heuristics or Prisma models."""
+        """Infers realistic response schema using AST Prisma models or DTO schemas."""
         raw_segment = base_route.strip("/").split("/")[-1] if base_route.strip("/") else "Item"
         parts = re.split(r"[-_\s]+", raw_segment)
         clean_name = "".join(p.capitalize() for p in parts if p)
@@ -882,8 +882,16 @@ class NestJSAdapter(BaseAdapter):
         else:
             model_name = clean_name or "Item"
 
-        if model_name in self.prisma_models:
-            model_props = self.prisma_models[model_name]["properties"]
+        # Case-insensitive / normalized lookup in AST Prisma models
+        matched_model = None
+        for pm in self.prisma_models:
+            if pm.lower() == model_name.lower() or pm.lower() == clean_name.lower():
+                matched_model = pm
+                break
+
+        if matched_model and matched_model in self.prisma_models:
+            model_name = matched_model
+            model_props = self.prisma_models[matched_model]["properties"]
         else:
             model_props = {
                 "id": {"type": "string", "required": True},
@@ -898,7 +906,17 @@ class NestJSAdapter(BaseAdapter):
                     "type": "object",
                     "properties": {
                         "success": {"type": "boolean", "required": True},
-                        "data": {"type": f"{model_name}[]", "required": True},
+                        "data": {
+                            "type": "array",
+                            "model": model_name,
+                            "required": True,
+                            "items": {
+                                "type": "object",
+                                "model": model_name,
+                                "properties": model_props
+                            },
+                            "properties": model_props
+                        },
                         "total": {"type": "number", "required": True},
                         "page": {"type": "number", "required": False},
                         "limit": {"type": "number", "required": False}
@@ -909,7 +927,12 @@ class NestJSAdapter(BaseAdapter):
                 "type": "object",
                 "properties": {
                     "success": {"type": "boolean", "required": True},
-                    "data": {"type": model_name, "required": True, **model_props}
+                    "data": {
+                        "type": "object",
+                        "model": model_name,
+                        "required": True,
+                        "properties": model_props
+                    }
                 }
             }
         elif method == "POST":
@@ -918,7 +941,12 @@ class NestJSAdapter(BaseAdapter):
                 "type": "object",
                 "properties": {
                     "success": {"type": "boolean", "required": True},
-                    "data": {"type": model_name, "required": True, **model_props},
+                    "data": {
+                        "type": "object",
+                        "model": model_name,
+                        "required": True,
+                        "properties": model_props
+                    },
                     "message": {"type": "string", "required": False}
                 }
             }
@@ -928,7 +956,12 @@ class NestJSAdapter(BaseAdapter):
                 "type": "object",
                 "properties": {
                     "success": {"type": "boolean", "required": True},
-                    "data": {"type": model_name, "required": True, **model_props},
+                    "data": {
+                        "type": "object",
+                        "model": model_name,
+                        "required": True,
+                        "properties": model_props
+                    },
                     "message": {"type": "string", "required": False}
                 }
             }

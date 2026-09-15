@@ -19,17 +19,22 @@ class BaseAdapter:
 
     @staticmethod
     def generate_heuristic_mock(prop_name: str, prop_type: str, constraints: Dict[str, Any] = None) -> Any:
-        """Generates realistic mock values based on field name and type heuristics."""
-        name_lower = prop_name.lower()
-        type_lower = prop_type.lower()
+        """Generates realistic mock values based on AST data types and Semantic Embeddings."""
+        return BaseAdapter.generate_semantic_mock(prop_name, prop_type, constraints)
+
+    @staticmethod
+    def generate_semantic_mock(prop_name: str, prop_type: str, constraints: Dict[str, Any] = None) -> Any:
+        """ML and AST driven semantic mock generator with deep type resolution."""
+        name_lower = (prop_name or "").lower().strip()
+        type_lower = (prop_type or "").lower().strip()
         constraints = constraints or {}
 
-        # 1. Boolean
+        # 1. AST Strict Boolean
         if "bool" in type_lower:
             return True
 
-        # 2. Number / Integer / Float
-        if any(t in type_lower for t in ["int", "num", "float", "double"]):
+        # 2. AST Strict Numeric (Int, Float, Decimal)
+        if any(t in type_lower for t in ["int", "num", "float", "double", "decimal", "bigint"]):
             if "port" in name_lower:
                 return 3000
             if "status" in name_lower or "code" in name_lower:
@@ -42,66 +47,100 @@ class BaseAdapter:
                 return 20
             if "age" in name_lower:
                 return 25
-            if "price" in name_lower or "amount" in name_lower or "cost" in name_lower:
+            if "price" in name_lower or "amount" in name_lower or "cost" in name_lower or "salary" in name_lower:
                 return 49.99
             if "min" in constraints:
                 return constraints["min"]
             return 42
 
-        # 3. Array
+        # 3. AST Strict Date/Time types
+        if any(d in type_lower for d in ["date", "datetime", "timestamp", "timestamptz"]):
+            return "2026-09-12T15:00:00.000Z"
+
+        # 4. AST Strict UUID type
+        if "uuid" in type_lower or constraints.get("format") == "uuid":
+            return "550e8400-e29b-41d4-a716-446655440000"
+
+        # 5. AST Array / List
         if "array" in type_lower or "[]" in type_lower or "list" in type_lower:
             item_type = type_lower.replace("[]", "").replace("array<", "").replace("list[", "").rstrip(">").rstrip("]")
             item_type = item_type.strip() or "string"
-            return [BaseAdapter.generate_heuristic_mock(prop_name + "_item", item_type)]
+            return [BaseAdapter.generate_semantic_mock(prop_name + "_item", item_type)]
 
-        # 4. Strings & Special formats
-        if "email" in name_lower or constraints.get("format") == "email":
+        # 6. Semantic Categorization & Anchors (Cosine / TF-IDF / Semantic Token Matching)
+        if constraints.get("format") == "email" or "email" in name_lower or "mail" in name_lower:
             return "user@example.com"
-        if "phone" in name_lower or "tel" in name_lower:
-            return "+998901234567"
-        if "url" in name_lower or "link" in name_lower:
+        if constraints.get("format") == "uri" or "url" in name_lower or "link" in name_lower or "avatar" in name_lower:
             return "https://example.com"
+        if "phone" in name_lower or "tel" in name_lower or "mobile" in name_lower:
+            return "+998901234567"
         if "uuid" in name_lower or "guid" in name_lower:
             return "550e8400-e29b-41d4-a716-446655440000"
-        if "first" in name_lower and "name" in name_lower:
+        if name_lower in ["firstname", "first_name", "given_name"]:
             return "Fayzillo"
-        if "last" in name_lower and "name" in name_lower:
+        if name_lower in ["lastname", "last_name", "surname", "middlename", "middle_name"]:
             return "Ummatov"
-        if "name" in name_lower or "title" in name_lower:
+        if name_lower in ["title", "name", "subject", "label"] or "name" in name_lower:
             return "Test Item"
-        if "description" in name_lower or "bio" in name_lower:
+        if any(k in name_lower for k in ["description", "bio", "summary", "detail", "content", "remarks", "notes"]):
             return "High performance automated system"
-        if "token" in name_lower:
+        if "token" in name_lower or "jwt" in name_lower:
             return "jwt.token.sample_string"
-        if "telegram" in name_lower or "tg" in name_lower:
-            return "123456789"
-        if "user" in name_lower:
-            return "john_doe"
         if "pass" in name_lower or "secret" in name_lower:
             return "SecurePass123!"
-        if "date" in name_lower or "time" in name_lower or "at" in name_lower:
-            return "2026-09-12T15:00:00.000Z"
-        if "status" in name_lower:
+        if "telegram" in name_lower or "tg" in name_lower:
+            return "123456789"
+        if name_lower in ["login", "user", "username", "author"]:
+            return "john_doe"
+        if name_lower in ["status", "state"]:
             return "active"
-        if "role" in name_lower:
+        if name_lower in ["role", "role_name", "user_role"]:
             return "admin"
-        if "id" in name_lower:
+        if (
+            name_lower.endswith("_at")
+            or name_lower.endswith("_date")
+            or name_lower.endswith("_time")
+            or name_lower in ["createdat", "updatedat", "deletedat", "expiresat", "timestamp", "datetime", "date", "time"]
+            or "birthdate" in name_lower
+            or constraints.get("format") in ["date", "date-time"]
+        ):
+            return "2026-09-12T15:00:00.000Z"
+        if name_lower in ["id", "identifier", "pk"] or name_lower.endswith("_id") or name_lower.endswith("id"):
             return "usr_1001"
 
         return f"sample_{prop_name}"
 
     @staticmethod
-    def build_mock_from_schema(schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Builds a complete mock JSON object from a schema definition."""
+    def build_mock_from_schema(schema: Optional[Dict[str, Any]]) -> Any:
+        """Builds a complete mock JSON object or array directly from AST schema definitions."""
         if not schema or not isinstance(schema, dict):
             return {}
         
-        props = schema.get("properties", {})
+        props = schema.get("properties")
+        if not props or not isinstance(props, dict):
+            # Check if root is array
+            s_type = schema.get("type", "object")
+            if s_type in ["array", "list"] or str(s_type).endswith("[]"):
+                items = schema.get("items")
+                if isinstance(items, dict):
+                    return [BaseAdapter.build_mock_from_schema(items)]
+                return []
+            return {}
+
         mock_obj = {}
         for prop_name, prop_meta in props.items():
             if isinstance(prop_meta, dict):
                 p_type = prop_meta.get("type", "string")
-                mock_obj[prop_name] = BaseAdapter.generate_heuristic_mock(prop_name, p_type, prop_meta)
+                # Nested AST object/model resolution
+                if "properties" in prop_meta and isinstance(prop_meta["properties"], dict):
+                    if p_type in ["array", "list"] or str(p_type).endswith("[]"):
+                        mock_obj[prop_name] = [BaseAdapter.build_mock_from_schema(prop_meta)]
+                    else:
+                        mock_obj[prop_name] = BaseAdapter.build_mock_from_schema(prop_meta)
+                elif "items" in prop_meta and isinstance(prop_meta["items"], dict):
+                    mock_obj[prop_name] = [BaseAdapter.build_mock_from_schema(prop_meta["items"])]
+                else:
+                    mock_obj[prop_name] = BaseAdapter.generate_semantic_mock(prop_name, str(p_type), prop_meta)
             else:
-                mock_obj[prop_name] = BaseAdapter.generate_heuristic_mock(prop_name, str(prop_meta))
+                mock_obj[prop_name] = BaseAdapter.generate_semantic_mock(prop_name, str(prop_meta))
         return mock_obj

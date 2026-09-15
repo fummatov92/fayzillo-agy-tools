@@ -750,6 +750,7 @@ def export_markdown_modular(endpoints: List[Dict[str, Any]], output_dir: str, pr
         
         mod_nested_file = os.path.join(mod_dir, "api_contracts.md")
         mod_flat_file = os.path.join(docs_base, f"{mod_name}.md")
+        mod_api_docs_file = os.path.join(docs_base, f"{mod_name}_api_docs.md")
 
         lines = []
         lines.append(f"# 📦 {mod_name.capitalize()} Moduli — API Kontraktlari (8-Bosqichli Standart)")
@@ -776,6 +777,10 @@ def export_markdown_modular(endpoints: List[Dict[str, Any]], output_dir: str, pr
             f.write(doc_content)
         generated.append(mod_flat_file)
 
+        with open(mod_api_docs_file, "w", encoding="utf-8") as f:
+            f.write(doc_content)
+        generated.append(mod_api_docs_file)
+
     # 2. Export Master Index: docs/README.md and docs/api_contracts.md
     index_lines = []
     index_lines.append(f"# 📘 API Contracts Specification — {project_name}")
@@ -787,17 +792,17 @@ def export_markdown_modular(endpoints: List[Dict[str, Any]], output_dir: str, pr
     index_lines.append("|---|---|---|---|")
     for mod_name, mod_endpoints in grouped.items():
         sample_paths = ", ".join([f"`{e['method']} {e['path']}`" for e in mod_endpoints[:2]])
-        index_lines.append(f"| **`{mod_name}`** | {len(mod_endpoints)} ta | [📂 `{mod_name}/api_contracts.md`](./{mod_name}/api_contracts.md) ([`{mod_name}.md`](./{mod_name}.md)) | {sample_paths} |")
+        index_lines.append(f"| **`{mod_name}`** | {len(mod_endpoints)} ta | [📂 `{mod_name}_api_docs.md`](./{mod_name}_api_docs.md) · [📂 `{mod_name}/api_contracts.md`](./{mod_name}/api_contracts.md) | {sample_paths} |")
 
     index_lines.append("\n---\n")
     index_lines.append("## 📑 Umumiy Marshrutlar Ro'yxati (Global Endpoints Map)\n")
 
     for mod_name, mod_endpoints in grouped.items():
-        index_lines.append(f"\n### 📦 Modul: [`{mod_name}`](./{mod_name}/api_contracts.md)\n")
+        index_lines.append(f"\n### 📦 Modul: [`{mod_name}`](./{mod_name}_api_docs.md)\n")
         for i, ep in enumerate(mod_endpoints, 1):
             m = ep['method']
             p = ep['path']
-            index_lines.append(f"{i}. [`{m}` **{p}**](./{mod_name}/api_contracts.md) — `{ep.get('handler', '')}`")
+            index_lines.append(f"{i}. [`{m}` **{p}**](./{mod_name}_api_docs.md) — `{ep.get('handler', '')}`")
 
     index_lines.append("\n---\n")
     index_lines.append("## 🔍 Barcha Kontraktlar Tafsiloti (Consolidated 8-Section Details)\n")

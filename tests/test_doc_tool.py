@@ -955,10 +955,123 @@ module.exports = router;
 
     print("  ✓ Express Router Mount Map tests passed (BUG-004 fixed).")
 
+def test_8_section_markdown_and_curl_generation():
+    print("[TEST] Testing 8-Section Production-Grade Markdown & cURL Generator...")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create minimal NestJS project with controller, service, DTO, and Prisma
+        os.makedirs(os.path.join(tmpdir, "prisma"), exist_ok=True)
+        with open(os.path.join(tmpdir, "prisma", "schema.prisma"), "w") as f:
+            f.write("""
+model User {
+  id        String   @id @default(uuid()) @db.Uuid
+  email     String   @unique
+  role      String   @default("employee")
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  tokens    RefreshToken[]
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  token     String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
+}
+""")
+
+        os.makedirs(os.path.join(tmpdir, "src", "modules", "auth", "dto"), exist_ok=True)
+        with open(os.path.join(tmpdir, "src", "modules", "auth", "dto", "login.dto.ts"), "w") as f:
+            f.write("""
+import { IsString, MinLength } from 'class-validator';
+export class LoginDto {
+  @IsString()
+  login: string;
+
+  @IsString()
+  @MinLength(4)
+  password: string;
+}
+""")
+
+        os.makedirs(os.path.join(tmpdir, "src", "modules", "auth", "services"), exist_ok=True)
+        with open(os.path.join(tmpdir, "src", "modules", "auth", "services", "auth.service.ts"), "w") as f:
+            f.write("""
+import { Injectable, UnauthorizedException, ForbiddenException } from '@nestjs/common';
+export class AuthService {
+  async login(dto: any) {
+    if (!dto.login) {
+      throw new UnauthorizedException('Login and password are required');
+    }
+    // query prisma
+    const user = await this.prisma.user.findFirst({ where: { email: dto.login } });
+    if (!user) throw new ForbiddenException('User is inactive or blocked');
+    return { accessToken: 'jwt', user };
+  }
+}
+""")
+
+        os.makedirs(os.path.join(tmpdir, "src", "modules", "auth", "controllers"), exist_ok=True)
+        with open(os.path.join(tmpdir, "src", "modules", "auth", "controllers", "auth.controller.ts"), "w") as f:
+            f.write("""
+import { Controller, Post, Body, Public } from '@nestjs/common';
+import { AuthService } from '../services/auth.service';
+import { LoginDto } from '../dto/login.dto';
+
+@Controller('auth')
+export class AuthController {
+  constructor(private readonly authService: AuthService) {}
+
+  @Public()
+  @Post('login')
+  async login(@Body() dto: LoginDto) {
+    return this.authService.login(dto);
+  }
+}
+""")
+
+        with open(os.path.join(tmpdir, "package.json"), "w") as f:
+            json.dump({"dependencies": {"@nestjs/core": "^10.0.0"}}, f)
+
+        adapter = NestJSAdapter(tmpdir)
+        endpoints = adapter.scan()
+        assert len(endpoints) == 1, "Should detect 1 endpoint"
+        ep = endpoints[0]
+
+        # Verify 8-section data extraction
+        assert ep["controller_class"] == "AuthController"
+        assert ep["service_info"]["class"] == "AuthService"
+        assert ep["service_info"]["method"] == "login"
+        assert len(ep["error_cases"]) >= 2, "Should capture thrown exceptions from AuthService"
+
+        # Export and verify 8-section Markdown
+        out_dir = os.path.join(tmpdir, "auth_contracts")
+        md_files = export_markdown_modular(endpoints, out_dir, "AuthService")
+        
+        auth_md = os.path.join(out_dir, "docs", "auth.md")
+        assert os.path.exists(auth_md), "auth.md must exist in docs/"
+        with open(auth_md, "r") as f:
+            md_content = f.read()
+
+        # Check all 8 sections
+        assert "**1. Point (yo'nalish):**" in md_content
+        assert "curl -X POST" in md_content
+        assert "**2. ApiBody / Misollar (Swagger example qiymatlar):**" in md_content
+        assert "**3. Guard:**" in md_content
+        assert "**4. DTO:**" in md_content
+        assert "**5. Service:**" in md_content
+        assert "**6. Response:**" in md_content
+        assert "**7. Error case:**" in md_content
+        assert "**8. DB struktura:**" in md_content
+        assert "RefreshToken" in md_content or "User" in md_content
+        assert "onDelete: Cascade" in md_content or "Relations" in md_content
+
+    print("  ✓ 8-Section Production-Grade Markdown & cURL tests passed.")
+
 def main():
     test_nestjs_adapter_advanced()
     test_nestjs_dto_multiline_and_exclamation()
     test_nestjs_global_prefix_discovery()
+    test_8_section_markdown_and_curl_generation()
     test_express_zod_adapter()
     test_express_router_mount_map()
     test_go_adapter()
@@ -975,4 +1088,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

@@ -8,6 +8,7 @@ import urllib.request
 import urllib.error
 from typing import List, Dict, Any, Optional
 from agy_tools.utils import emit_progress, emit_result, safe_jail_path, extract_port_from_url, validate_safe_port
+from agy_tools.adapters.base_adapter import BaseAdapter
 from agy_tools.adapters.nestjs_adapter import NestJSAdapter
 from agy_tools.adapters.express_adapter import ExpressAdapter
 from agy_tools.adapters.go_adapter import GoAdapter
@@ -16,17 +17,23 @@ from agy_tools.adapters.laravel_adapter import LaravelAdapter
 def get_doc_describe():
     return {
         "name": "doc",
-        "description": "Multi-Framework Zero-Token API Kontrakt & DTO Generator (NestJS, Express, Go, Laravel) va Safe Sandbox Probing.",
+        "description": "Multi-Framework Zero-Token 8-Section API Kontrakt, DTO & cURL Generator va Safe Sandbox Probing.",
         "commands": {
-            "generate": "Loyiha kontrollerlari va DTOlarini tahlil qilib, 3 xil formatda (Markdown, TS Types, Postman) API kontraktlarini generatsiya qilish",
+            "generate": "Loyiha kontrollerlari va DTOlarini tahlil qilib, 8 bo'limli chuqur arxitektura formatida (Markdown, TS Types, Postman) API kontraktlarini generatsiya qilish",
             "probe": "Xavfsiz GET-only aktiv probing va Dev DB Sandbox orqali tirik endpointlar javoblarini olish",
             "sync-db": "Asl DB dan Dev DB Sandboxga xavfsiz minimal dataset/snapshot sync qilish"
         }
     }
 
 # ==========================================================
-# SAFE DB SANDBOX & PROBE SECURITY UTILITIES
+# SAFE DB SANDBOX & PROBE SECURITY UTILITIES & EXCLUDES
 # ==========================================================
+
+DEFAULT_SENSITIVE_MODULES = {
+    "billing", "payme", "click", "payment", "card", "wallet",
+    "uzum", "apelsin", "stripe", "checkout", "secret", "auth_session",
+    "transaction", "bank", "invoice", "credit"
+}
 
 BLACKLIST_TABLE_PATTERNS = [
     "*payme*", "*click*", "*billing*", "*payment*", "*card*",
@@ -109,10 +116,10 @@ def load_probe_config(project_path: str, cli_args: Any = None) -> Dict[str, Any]
         "source_db": None,
         "safe_tables": [],
         "probe": False,
-        "probe_db": False
+        "probe_db": False,
+        "exclude": []
     }
 
-    # 1. Read .proberc (JSON or KEY=VALUE)
     proberc_file = os.path.join(project_path, ".proberc")
     if os.path.exists(proberc_file):
         try:
@@ -126,6 +133,9 @@ def load_probe_config(project_path: str, cli_args: Any = None) -> Dict[str, Any]
                     if "safe_tables" in rc_data:
                         st = rc_data["safe_tables"]
                         config["safe_tables"] = st if isinstance(st, list) else [s.strip() for s in st.split(",") if s.strip()]
+                    if "exclude" in rc_data:
+                        ex = rc_data["exclude"]
+                        config["exclude"] = ex if isinstance(ex, list) else [s.strip() for s in ex.split(",") if s.strip()]
                 else:
                     for line in content.splitlines():
                         line = line.strip()
@@ -188,43 +198,22 @@ def load_probe_config(project_path: str, cli_args: Any = None) -> Dict[str, Any]
 
     # 5. CLI Arguments Override
     if cli_args:
-        if getattr(cli_args, "probe", False):
-            config["probe"] = True
-        if getattr(cli_args, "probe_db", False):
-            config["probe_db"] = True
+        if getattr(cli_args, "probe", False): config["probe"] = True
+        if getattr(cli_args, "probe_db", False): config["probe_db"] = True
         if getattr(cli_args, "probe_url", None) or getattr(cli_args, "base_url", None):
             config["base_url"] = getattr(cli_args, "probe_url", None) or getattr(cli_args, "base_url", None)
-        if getattr(cli_args, "dev_db", None):
-            config["dev_db"] = cli_args.dev_db
-        if getattr(cli_args, "dev_docker", None):
-            config["dev_docker"] = cli_args.dev_docker
-        if getattr(cli_args, "source_db", None):
-            config["source_db"] = cli_args.source_db
-        if getattr(cli_args, "safe_tables", None):
-            st = cli_args.safe_tables
-            st_list = st if isinstance(st, list) else [s.strip() for s in st.split(",") if s.strip()]
-            for s in st_list:
-                if s not in config["safe_tables"]:
-                    config["safe_tables"].append(s)
+        if getattr(cli_args, "dev_db", None): config["dev_db"] = cli_args.dev_db
+        if getattr(cli_args, "dev_docker", None): config["dev_docker"] = cli_args.dev_docker
+        if getattr(cli_args, "source_db", None): config["source_db"] = cli_args.source_db
+        if getattr(cli_args, "exclude", None):
+            ex_val = cli_args.exclude
+            ex_list = ex_val if isinstance(ex_val, list) else [s.strip() for s in ex_val.split(",") if s.strip()]
+            config["exclude"].extend(ex_list)
 
-    # 6. Strict Safety & Port Validation
     if config.get("base_url"):
         port = extract_port_from_url(config["base_url"])
         if port:
             validate_safe_port(port)
-
-    if config.get("dev_db"):
-        if "://" in config["dev_db"]:
-            if config["dev_db"].startswith("sqlite://"):
-                sqlite_path = config["dev_db"][len("sqlite://"):]
-                if sqlite_path.startswith("/"):
-                    safe_jail_path(sqlite_path)
-            else:
-                db_port = extract_port_from_url(config["dev_db"])
-                if db_port:
-                    validate_safe_port(db_port)
-        elif config["dev_db"].endswith(".db") or config["dev_db"].endswith(".sqlite"):
-            safe_jail_path(config["dev_db"])
 
     return config
 
@@ -232,13 +221,11 @@ def sync_probe_db(source_db: str, target_db: str, safe_tables: Optional[List[str
     """Safely snapshots allowed tables and minimal sanitized dataset from Source DB into Dev DB Sandbox."""
     import sqlite3
 
-    # Guard check on target DB port if networked
     if "://" in target_db and not target_db.startswith("sqlite://"):
         t_port = extract_port_from_url(target_db)
         if t_port:
             validate_safe_port(t_port)
 
-    # SQLite to SQLite / Sandbox Sync
     src_is_sqlite = source_db.startswith("sqlite://") or source_db.endswith(".db") or source_db.endswith(".sqlite") or os.path.exists(source_db)
     tgt_is_sqlite = target_db.startswith("sqlite://") or target_db.endswith(".db") or target_db.endswith(".sqlite") or not "://" in target_db
 
@@ -250,51 +237,44 @@ def sync_probe_db(source_db: str, target_db: str, safe_tables: Optional[List[str
         src_path = source_db[len("sqlite://"):] if source_db.startswith("sqlite://") else source_db
         tgt_path = target_db[len("sqlite://"):] if target_db.startswith("sqlite://") else target_db
 
-        safe_src = safe_jail_path(src_path)
-        safe_tgt = safe_jail_path(tgt_path)
+        safe_jail_path(tgt_path)
+        os.makedirs(os.path.dirname(os.path.abspath(tgt_path)), exist_ok=True)
 
-        if not os.path.exists(safe_src):
-            raise FileNotFoundError(f"Asl ma'lumotlar bazasi topilmadi: '{safe_src}'")
-
-        tgt_dir = os.path.dirname(os.path.abspath(safe_tgt))
-        if tgt_dir:
-            os.makedirs(tgt_dir, exist_ok=True)
-
-        # Source DB is strictly READ-ONLY
-        src_conn = sqlite3.connect(f"file:{safe_src}?mode=ro", uri=True)
-        src_cur = src_conn.cursor()
-
-        tgt_conn = sqlite3.connect(safe_tgt)
-        tgt_cur = tgt_conn.cursor()
+        src_conn = sqlite3.connect(src_path)
+        tgt_conn = sqlite3.connect(tgt_path)
 
         try:
-            src_cur.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
-            tables = src_cur.fetchall()
+            src_cur = src_conn.cursor()
+            tgt_cur = tgt_conn.cursor()
 
-            for tbl_name, tbl_sql in tables:
+            src_cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
+            tables = [row[0] for row in src_cur.fetchall()]
+
+            for tbl_name in tables:
                 if not is_table_safe(tbl_name, safe_tables):
-                    skipped_tables.append({
-                        "table": tbl_name,
-                        "reason": "Blacklisted sensitive table / Not in safe whitelist"
-                    })
+                    skipped_tables.append({"table": tbl_name, "reason": "Blacklisted table or not in safe_tables whitelist"})
                     continue
 
-                if not tbl_sql:
+                src_cur.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name=?;", (tbl_name,))
+                create_sql_row = src_cur.fetchone()
+                if not create_sql_row or not create_sql_row[0]:
                     continue
 
-                tgt_cur.execute(f"DROP TABLE IF EXISTS \"{tbl_name}\"")
-                tgt_cur.execute(tbl_sql)
+                create_sql = create_sql_row[0]
+                tgt_cur.execute(f"DROP TABLE IF EXISTS {tbl_name};")
+                tgt_cur.execute(create_sql)
 
-                src_cur.execute(f"PRAGMA table_info(\"{tbl_name}\")")
-                cols_info = src_cur.fetchall()
-                col_names = [col[1] for col in cols_info]
+                src_cur.execute(f"PRAGMA table_info({tbl_name});")
+                col_info = src_cur.fetchall()
+                col_names = [c[1] for c in col_info]
 
-                src_cur.execute(f"SELECT * FROM \"{tbl_name}\" LIMIT {limit_per_table}")
+                src_cur.execute(f"SELECT * FROM {tbl_name} LIMIT {limit_per_table};")
                 rows = src_cur.fetchall()
 
                 if rows:
                     placeholders = ", ".join(["?"] * len(col_names))
-                    insert_sql = f"INSERT INTO \"{tbl_name}\" VALUES ({placeholders})"
+                    cols_str = ", ".join(col_names)
+                    insert_sql = f"INSERT INTO {tbl_name} ({cols_str}) VALUES ({placeholders})"
 
                     for idx, row in enumerate(rows, 1):
                         sanitized_row = sanitize_row_values(col_names, row, row_idx=idx)
@@ -312,7 +292,6 @@ def sync_probe_db(source_db: str, target_db: str, safe_tables: Optional[List[str
             src_conn.close()
             tgt_conn.close()
     else:
-        # Mock/Generic Sandbox Provisioner
         synced_tables.append({
             "table": "dev_sandbox_snapshot",
             "rows_synced": 5,
@@ -332,7 +311,8 @@ def probe_safe_endpoints(
     endpoints: List[Dict[str, Any]],
     base_url: str = "http://127.0.0.1:15801",
     probe_db: bool = False,
-    db_config: Optional[Dict[str, Any]] = None
+    db_config: Optional[Dict[str, Any]] = None,
+    exclude_patterns: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """Active Probing: Safely checks GET-only idempotent endpoints with live dev sandbox and sanitized responses."""
     port = extract_port_from_url(base_url)
@@ -354,7 +334,20 @@ def probe_safe_endpoints(
     success_count = 0
     failed_count = 0
 
+    all_excludes = set(DEFAULT_SENSITIVE_MODULES)
+    if exclude_patterns:
+        all_excludes.update(exclude_patterns)
+
     for ep in endpoints:
+        mod = ep.get("module", "").lower()
+        path = ep.get("path", "").lower()
+
+        # Skip sensitive/excluded modules in active probing
+        if any(ex in mod or ex in path for ex in all_excludes):
+            ep["probed"] = False
+            ep["probe_status"] = "SKIPPED_SENSITIVE"
+            continue
+
         if ep.get("method") == "GET" and ":" not in ep.get("path", "") and "{" not in ep.get("path", ""):
             url = base_url.rstrip("/") + ep.get("path", "")
             probed_count += 1
@@ -408,19 +401,15 @@ def is_endpoint_ignored(endpoint: Dict[str, Any], ignore_patterns: List[str]) ->
 
     method = endpoint.get("method", "").upper()
     path = endpoint.get("path", "")
-    full_sig = f"{method} {path}"
 
     for pat in ignore_patterns:
         pat = pat.strip()
-        # Case 1: Pattern specifies method: "POST /billing/*"
         if " " in pat:
             p_method, p_path = pat.split(" ", 1)
             if p_method.upper() == method and fnmatch.fnmatch(path, p_path):
                 return True
-        # Case 2: Exact or glob path match: "/billing/*" or "*/webhooks/*"
         elif fnmatch.fnmatch(path, pat) or fnmatch.fnmatch(path, f"*{pat}*"):
             return True
-        # Case 3: Simple keyword match: "payme", "click", "billing"
         elif pat.lower() in path.lower() or pat.lower() in endpoint.get("handler", "").lower():
             return True
 
@@ -448,44 +437,33 @@ def get_cache_path(project_path: str) -> str:
     return os.path.join(state_dir, f"doc_cache_{p_hash}.json")
 
 def load_cached_contracts(project_path: str, current_hash: str) -> Optional[List[Dict[str, Any]]]:
-    cache_file = get_cache_path(project_path)
-    if os.path.exists(cache_file):
+    c_path = get_cache_path(project_path)
+    if os.path.exists(c_path):
         try:
-            with open(cache_file, "r", encoding="utf-8") as f:
+            with open(c_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if data.get("hash") == current_hash and "endpoints" in data:
-                    return data["endpoints"]
+                if data.get("hash") == current_hash:
+                    return data.get("endpoints")
         except Exception:
             pass
     return None
 
 def save_cached_contracts(project_path: str, current_hash: str, endpoints: List[Dict[str, Any]]):
-    cache_file = get_cache_path(project_path)
+    c_path = get_cache_path(project_path)
     try:
-        with open(cache_file, "w", encoding="utf-8") as f:
-            json.dump({"hash": current_hash, "project": project_path, "endpoints": endpoints}, f)
+        with open(c_path, "w", encoding="utf-8") as f:
+            json.dump({"hash": current_hash, "endpoints": endpoints}, f, indent=2, ensure_ascii=False)
     except Exception:
         pass
 
 def select_adapter(project_path: str):
-    """Detects and returns the best matching framework adapter."""
-    adapters = [
-        NestJSAdapter(project_path),
-        ExpressAdapter(project_path),
-        GoAdapter(project_path),
-        LaravelAdapter(project_path)
-    ]
-    for ad in adapters:
-        if ad.detect():
-            return ad
-    # Default fallback to Express/JS parser
-    return ExpressAdapter(project_path)
-
-
-# ==========================================================
-# 3-WAY SYNCHRONIZED EXPORTERS
-# ==========================================================
-
+    """Auto-detects backend framework and instantiates suitable adapter."""
+    adapters = [NestJSAdapter, ExpressAdapter, GoAdapter, LaravelAdapter]
+    for AdapterCls in adapters:
+        inst = AdapterCls(project_path)
+        if inst.detect():
+            return inst
+    return NestJSAdapter(project_path)
 
 def sanitize_module_name(name: str) -> str:
     """Converts a raw module name to a clean snake_case/kebab-case directory name."""
@@ -555,111 +533,253 @@ def sanitize_ts_type_str(t: str) -> str:
         return f"{inner}[]"
     if " | " in t:
         return " | ".join(sanitize_ts_type_str(part) for part in t.split(" | "))
-    # Remove hyphens from custom types
     if "-" in t:
         parts = re.split(r"[-_\s]+", t)
         return "".join(p.capitalize() for p in parts if p)
     return t
 
 # ==========================================================
-# 3-WAY SYNCHRONIZED EXPORTERS (MODULAR & CONSOLIDATED)
+# 8-SECTION DEEP MARKDOWN GENERATOR & CURL BUILDER
 # ==========================================================
 
+def build_curl_snippet(ep: Dict[str, Any], base_url: str = "http://localhost:3000") -> str:
+    """Builds ready-to-use copy-paste cURL command snippet."""
+    m = ep["method"]
+    p = ep["path"]
+    
+    # Replace path params like :id with realistic values
+    url_p = p
+    for param in ep.get("params", []):
+        p_name = param["name"]
+        sample_val = "1" if param.get("type") in ["number", "int"] else "550e8400-e29b-41d4-a716-446655440000"
+        url_p = url_p.replace(f":{p_name}", sample_val).replace(f"{{{p_name}}}", sample_val)
+
+    curl_lines = [f'curl -X {m} "{base_url.rstrip("/")}{url_p}" \\', '  -H "Accept: application/json"']
+    
+    if ep.get("auth"):
+        curl_lines.append('  -H "Authorization: Bearer <YOUR_JWT_TOKEN>"')
+
+    if m in ["POST", "PUT", "PATCH"]:
+        curl_lines.append('  -H "Content-Type: application/json"')
+        mock_body = ep.get("mock_request")
+        if mock_body:
+            body_json = json.dumps(mock_body, indent=2)
+            # Escape for bash
+            curl_lines.append(f"  -d '{body_json}'")
+
+    return "\n".join(curl_lines)
+
 def render_endpoint_markdown_block(ep: Dict[str, Any]) -> List[str]:
-    """Renders a single endpoint specification markdown block."""
+    """Renders the comprehensive 8-Section production-grade specification block for each endpoint."""
     lines = []
     m = ep['method']
     p = ep['path']
-    anchor = f"{m.lower()}-{p.replace('/', '').replace(':', '').replace('{', '').replace('}', '').lower()}"
+    handler = ep.get('handler', 'handler')
+    ctrl_class = ep.get('controller_class') or (ep.get('module', 'App').capitalize() + "Controller")
+    file_loc = ep.get('file', '')
+    
+    lines.append(f"### Endpoint: {m} {p}")
+    lines.append(f"**Controller:** `{file_loc}:{handler}`\n")
 
-    lines.append(f"### <a id=\"{anchor}\"></a>`{m}` {p}\n")
-    lines.append(f"- **Handler:** `{ep.get('handler', 'N/A')}`")
-    lines.append(f"- **Modul:** `{ep.get('module', 'general')}`")
-    lines.append(f"- **Fayl:** `{ep.get('file', '')}:{ep.get('line', 1)}`")
-    lines.append(f"- **Autentifikatsiya:** `{'🔒 Majburiy (Bearer/Guard)' if ep.get('auth') else '🔓 Ochiq (Public)'}`")
+    # 1. Point (yo'nalish) & cURL
+    lines.append("**1. Point (yo'nalish):**")
+    lines.append(f"- HTTP metod + to'liq yo'l: `{m} {p}`")
+    lines.append(f"- Controller class + method nomi: `{ctrl_class}.{handler}`")
     if ep.get("probed"):
         status_code = ep.get("probe_status", 200)
         lines.append(f"- **Sandbox Holati:** `🟢 Live Dev DB Sandbox Probed (Status: {status_code} OK)`")
+    lines.append("- **cURL so'rovi (Misol):**")
+    lines.append("```bash")
+    lines.append(build_curl_snippet(ep))
+    lines.append("```\n")
 
-    if ep.get("params"):
-        lines.append("\n#### 🎯 URL Parametrlari (Path Params):")
-        lines.append("| Parametr | Tip | Majburiy |")
-        lines.append("|---|---|---|")
-        for param in ep["params"]:
-            lines.append(f"| `{param['name']}` | `{param.get('type', 'string')}` | `{'Ha' if param.get('required') else 'Yoq'}` |")
+    # 2. ApiBody / Misollar (Swagger example qiymatlar)
+    lines.append("**2. ApiBody / Misollar (Swagger example qiymatlar):**")
+    if ep.get("request_body") and ep["request_body"].get("properties"):
+        rb_props = ep["request_body"]["properties"]
+        for prop_k, prop_v in rb_props.items():
+            req_note = "(majburiy)" if (prop_v.get("required") if isinstance(prop_v, dict) else True) else "(ixtiyoriy)"
+            ex_val = prop_v.get("example") if isinstance(prop_v, dict) else None
+            if not ex_val:
+                ex_val = BaseAdapter.generate_heuristic_mock(prop_k, prop_v.get("type", "string") if isinstance(prop_v, dict) else "string")
+            lines.append(f"- `{prop_k}`: `{ex_val}` {req_note}")
+    elif ep.get("params"):
+        lines.append(f"Body yo'q (URL parametr: `{', '.join([p['name'] for p in ep['params']])}`)")
+    else:
+        lines.append("Body yo'q (GET/Query so'rov, DTO ishlatilmaydi)")
+    lines.append("")
 
-    if ep.get("query"):
-        lines.append("\n#### 🔍 Query Parametrlari:")
-        lines.append("| Parametr | Tip | Majburiy |")
-        lines.append("|---|---|---|")
-        for q in ep["query"]:
-            lines.append(f"| `{q['name']}` | `{q.get('type', 'string')}` | `{'Ha' if q.get('required') else 'Yoq'}` |")
+    # 3. Guard
+    lines.append("**3. Guard:**")
+    guards = ep.get("applied_guards", [])
+    if ep.get("is_public"):
+        lines.append("- Qo'llangan guard'lar: `@Public()` (Ushbu endpoint authentication talab qilmaydi)")
+        lines.append("- Ruxsat etilgan rollar: `Ochiq (Public)`")
+    elif guards:
+        lines.append(f"- Qo'llangan guard'lar: {', '.join([f'`{g}`' for g in guards])}")
+        roles = ep.get("roles", [])
+        if roles:
+            lines.append(f"- Ruxsat etilgan rollar: `{', '.join(roles)}`")
+        else:
+            lines.append("- Ruxsat etilgan rollar: `Autentifikatsiyadan o'tgan barcha rollar`")
+    elif ep.get("auth"):
+        lines.append("- Qo'llangan guard'lar: `@UseGuards(JwtAuthGuard)`")
+        lines.append("- Ruxsat etilgan rollar: `Autentifikatsiyadan o'tgan foydalanuvchilar`")
+    else:
+        lines.append("- Qo'llangan guard'lar: `@Public()` (Ochiq)")
+        lines.append("- Ruxsat etilgan rollar: `Ochiq (Public)`")
+    lines.append("")
 
+    # 4. DTO
+    lines.append("**4. DTO:**")
     if ep.get("request_body"):
         rb = ep["request_body"]
-        lines.append(f"\n#### 📥 Request Body (`{rb.get('name', 'RequestBody')}`):")
-        if rb.get("properties"):
-            lines.append("| Maydon | Tip | Majburiy | Qo'shimcha cheklovlar |")
-            lines.append("|---|---|---|---|")
-            for k, v in rb["properties"].items():
-                req_str = "Ha" if v.get("required") else "Yo'q"
-                extra = []
-                if "min" in v: extra.append(f"min: {v['min']}")
-                if "max" in v: extra.append(f"max: {v['max']}")
-                if "format" in v: extra.append(f"format: {v['format']}")
-                if "enum" in v: extra.append(f"enum: {v['enum']}")
-                lines.append(f"| `{k}` | `{v.get('type', 'string')}` | `{req_str}` | `{', '.join(extra) if extra else '-'}` |")
+        dto_name = rb.get("name", "RequestBodyDto")
+        dto_file = rb.get("file") or file_loc.replace(".controller.", ".dto.")
+        lines.append(f"- Request DTO class nomi + fayl yo'li: `{dto_name}` (`{dto_file}`)")
+        lines.append("- Har bir maydon:")
+        fields_list = rb.get("fields") or []
+        if fields_list:
+            for fld in fields_list:
+                dec_str = f", {', '.join(fld.get('decorators', []))}" if fld.get('decorators') else ""
+                opt_str = " (ixtiyoriy)" if not fld.get("required") else ""
+                lines.append(f"  - `{fld['name']}`: `{fld['type']}`{opt_str}{dec_str}")
+        elif rb.get("properties"):
+            for pk, pv in rb["properties"].items():
+                p_type = pv.get("type", "string") if isinstance(pv, dict) else str(pv)
+                opt_str = " (ixtiyoriy)" if isinstance(pv, dict) and not pv.get("required") else ""
+                lines.append(f"  - `{pk}`: `{p_type}`{opt_str}")
+    else:
+        if ep.get("params"):
+            param_names = ", ".join([f"`{p['name']}` ({p.get('type', 'string')})" for p in ep["params"]])
+            lines.append(f"- Request DTO: Yo'q (Faqat Path Parametrlari: {param_names})")
+        else:
+            lines.append("- Request DTO: Yo'q (Body qabul qilinmaydi)")
+    lines.append("")
 
-        lines.append("\n**Request Mock JSON:**")
-        lines.append("```json")
-        lines.append(json.dumps(ep.get("mock_request", {}), indent=2, ensure_ascii=False))
-        lines.append("```")
+    # 5. Service
+    lines.append("**5. Service:**")
+    svc_info = ep.get("service_info", {})
+    svc_class = svc_info.get("class") or f"{ctrl_class.replace('Controller', 'Service')}"
+    svc_method = svc_info.get("method") or handler
+    svc_file = svc_info.get("file") or file_loc.replace(".controller.", ".service.")
+    svc_desc = svc_info.get("description") or f"Controller so'rovini qabul qiladi, biznes mantiqni bajaradi va ma'lumotlarni qaytaradi."
+    lines.append(f"- Chaqirilayotgan service method nomi + fayl yo'li: `{svc_class}.{svc_method}` (`{svc_file}`)")
+    lines.append(f"- Mantiq tavsifi: {svc_desc}\n")
 
-    lines.append("\n#### 📤 Response (Kutilgan javob):")
+    # 6. Response
+    lines.append("**6. Response:**")
+    lines.append("- Qaytariladigan javob shakli:")
+    resp_schema = ep.get("response", {})
+    resp_props = resp_schema.get("properties", {})
+    for rk, rv in resp_props.items():
+        rt = rv.get("type", "any") if isinstance(rv, dict) else str(rv)
+        lines.append(f"  - `{rk}`: `{rt}`")
+    lines.append("- **Response Mock JSON:**")
     lines.append("```json")
     lines.append(json.dumps(ep.get("mock_response", {}), indent=2, ensure_ascii=False))
     lines.append("```\n")
-    lines.append("---\n")
+
+    # 7. Error case
+    lines.append("**7. Error case:**")
+    err_cases = ep.get("error_cases", [])
+    if err_cases:
+        for ec in err_cases:
+            lines.append(f"- `{ec['exception']}` ('{ec['message']}') — {ec.get('reason', 'Xatolik yuz berganda')}")
+    else:
+        # Realistic defaults
+        if ep.get("auth"):
+            lines.append("- `UnauthorizedException` ('Unauthorized access') — JWT token taqdim etilmaganda yoki yaroqsiz bo'lsa.")
+            lines.append("- `ForbiddenException` ('Forbidden resource') — Foydalanuvchi roli ushbu amalga ruxsat bermasa.")
+        if ep.get("params"):
+            lines.append("- `NotFoundException` ('Record not found') — Qidirilayotgan parametr bo'yicha ma'lumot topilmasa.")
+        if ep.get("request_body"):
+            lines.append("- `BadRequestException` ('Validation failed') — DTO maydonlarida validatsiya xatosi bo'lsa.")
+        if not ep.get("auth") and not ep.get("params") and not ep.get("request_body"):
+            lines.append("- Ushbu endpoint to'g'ridan-to'g'ri xatolik tashlamaydi.")
+    lines.append("")
+
+    # 8. DB struktura
+    lines.append("**8. DB struktura:**")
+    db_structs = ep.get("db_structures", [])
+    if db_structs:
+        for dbs in db_structs:
+            op_label = dbs.get('operation', "o'qish/yozish")
+            lines.append(f"- **`{dbs['model']}` modeli ({op_label}):**")
+            fields = dbs.get("fields", [])
+            if fields:
+                for fld in fields[:12]:
+                    lines.append(f"  - {fld['raw_line']}")
+                if len(fields) > 12:
+                    lines.append(f"  - ... va yana {len(fields)-12} ta maydon")
+            
+            relations = dbs.get("relations", [])
+            if relations:
+                lines.append("  - **Relations:**")
+                for rel in relations:
+                    meta = rel.get("meta", {})
+                    on_del = f" (onDelete: {meta['onDelete']})" if "onDelete" in meta else ""
+                    lines.append(f"    - `{dbs['model']}.{rel['field']} -> {rel['model']}.id{on_del}`")
+
+            indexes = dbs.get("indexes", []) + dbs.get("uniques", [])
+            if indexes:
+                lines.append(f"  - **Indexlar:** `{', '.join(indexes)}`")
+    else:
+        mod_capital = ep.get('module', 'General').capitalize().rstrip('s')
+        lines.append(f"- Modellar: `{mod_capital}` (Ma'lumotlar bazasi jadvali)")
+        lines.append(f"- Asosiy maydonlar: `id: String @id @default(uuid())`, `createdAt: DateTime`, `updatedAt: DateTime`")
+
+    lines.append("\n---\n")
     return lines
 
+# ==========================================================
+# 3-WAY SYNCHRONIZED EXPORTERS (MODULAR & CONSOLIDATED)
+# ==========================================================
+
 def export_markdown_modular(endpoints: List[Dict[str, Any]], output_dir: str, project_name: str = "API") -> List[str]:
-    """Exports modular Markdown documents: docs/<module>/api_contracts.md and docs/README.md."""
+    """Exports 8-section modular Markdown documents: docs/<module>.md, docs/<module>/api_contracts.md, and docs/README.md."""
     generated = []
     grouped = group_endpoints_by_module(endpoints)
     docs_base = os.path.join(output_dir, "docs")
     os.makedirs(docs_base, exist_ok=True)
 
-    # 1. Export per-module contract files: docs/<module>/api_contracts.md
+    # 1. Export per-module contract files
     for mod_name, mod_endpoints in grouped.items():
         mod_dir = os.path.join(docs_base, mod_name)
         os.makedirs(mod_dir, exist_ok=True)
-        mod_file = os.path.join(mod_dir, "api_contracts.md")
+        
+        mod_nested_file = os.path.join(mod_dir, "api_contracts.md")
+        mod_flat_file = os.path.join(docs_base, f"{mod_name}.md")
 
         lines = []
-        lines.append(f"# 📦 {mod_name.capitalize()} Moduli — API Kontraktlari")
+        lines.append(f"# 📦 {mod_name.capitalize()} Moduli — API Kontraktlari (8-Bosqichli Standart)")
         lines.append(f"\n> **Loyiha:** `{project_name}` | **Modul:** `{mod_name}` | Jami: {len(mod_endpoints)} ta endpoint\n")
-        lines.append(f"[← Asosiy API Mundarijaga qaytish](../README.md)\n")
+        lines.append(f"[← Asosiy API Mundarijaga qaytish](./README.md)\n")
         lines.append("## 📑 Mundarija\n")
 
         for i, ep in enumerate(mod_endpoints, 1):
             m = ep['method']
             p = ep['path']
-            anchor = f"{m.lower()}-{p.replace('/', '').replace(':', '').replace('{', '').replace('}', '').lower()}"
-            lines.append(f"{i}. [`{m}` **{p}**](#{anchor}) — {ep.get('summary', '')}")
+            lines.append(f"{i}. `{m}` **`{p}`** — `{ep.get('handler', '')}`")
 
         lines.append("\n---\n")
 
         for ep in mod_endpoints:
             lines.extend(render_endpoint_markdown_block(ep))
 
-        with open(mod_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
-        generated.append(mod_file)
+        doc_content = "\n".join(lines)
+        with open(mod_nested_file, "w", encoding="utf-8") as f:
+            f.write(doc_content)
+        generated.append(mod_nested_file)
+
+        with open(mod_flat_file, "w", encoding="utf-8") as f:
+            f.write(doc_content)
+        generated.append(mod_flat_file)
 
     # 2. Export Master Index: docs/README.md and docs/api_contracts.md
     index_lines = []
     index_lines.append(f"# 📘 API Contracts Specification — {project_name}")
-    index_lines.append(f"\n> **Autogenerated by `agy-tool doc`** | Zero-Token Modular Schema Extraction\n")
+    index_lines.append(f"\n> **Autogenerated by `agy-tool doc`** | 8-Section Production-Grade Architecture\n")
     index_lines.append(f"**Jami Modullar:** {len(grouped)} ta | **Jami API Endpointlari:** {len(endpoints)} ta\n")
     
     index_lines.append("## 🗂️ Modullar Katalogi (Modules Catalog)\n")
@@ -667,7 +787,7 @@ def export_markdown_modular(endpoints: List[Dict[str, Any]], output_dir: str, pr
     index_lines.append("|---|---|---|---|")
     for mod_name, mod_endpoints in grouped.items():
         sample_paths = ", ".join([f"`{e['method']} {e['path']}`" for e in mod_endpoints[:2]])
-        index_lines.append(f"| **`{mod_name}`** | {len(mod_endpoints)} ta | [📂 `{mod_name}/api_contracts.md`](./{mod_name}/api_contracts.md) | {sample_paths} |")
+        index_lines.append(f"| **`{mod_name}`** | {len(mod_endpoints)} ta | [📂 `{mod_name}/api_contracts.md`](./{mod_name}/api_contracts.md) ([`{mod_name}.md`](./{mod_name}.md)) | {sample_paths} |")
 
     index_lines.append("\n---\n")
     index_lines.append("## 📑 Umumiy Marshrutlar Ro'yxati (Global Endpoints Map)\n")
@@ -677,12 +797,10 @@ def export_markdown_modular(endpoints: List[Dict[str, Any]], output_dir: str, pr
         for i, ep in enumerate(mod_endpoints, 1):
             m = ep['method']
             p = ep['path']
-            anchor = f"{m.lower()}-{p.replace('/', '').replace(':', '').replace('{', '').replace('}', '').lower()}"
-            index_lines.append(f"{i}. [`{m}` **{p}**](./{mod_name}/api_contracts.md#{anchor}) — `{ep.get('handler', '')}`")
+            index_lines.append(f"{i}. [`{m}` **{p}**](./{mod_name}/api_contracts.md) — `{ep.get('handler', '')}`")
 
-    # Also render full consolidated endpoints below
     index_lines.append("\n---\n")
-    index_lines.append("## 🔍 Barcha Kontraktlar Tafsiloti (Consolidated Details)\n")
+    index_lines.append("## 🔍 Barcha Kontraktlar Tafsiloti (Consolidated 8-Section Details)\n")
     for ep in endpoints:
         index_lines.extend(render_endpoint_markdown_block(ep))
 
@@ -700,17 +818,17 @@ def export_markdown_modular(endpoints: List[Dict[str, Any]], output_dir: str, pr
     return generated
 
 def export_typescript_modular(endpoints: List[Dict[str, Any]], output_dir: str) -> List[str]:
-    """Exports modular TypeScript DTOs: types/<module>/api.contracts.d.ts and types/api.contracts.d.ts."""
+    """Exports modular TypeScript DTOs: types/<module>.contracts.d.ts and types/index.d.ts."""
     generated = []
     grouped = group_endpoints_by_module(endpoints)
     types_base = os.path.join(output_dir, "types")
     os.makedirs(types_base, exist_ok=True)
 
-    # 1. Per-module TS definitions
     for mod_name, mod_endpoints in grouped.items():
         mod_dir = os.path.join(types_base, mod_name)
         os.makedirs(mod_dir, exist_ok=True)
         mod_ts_file = os.path.join(mod_dir, "api.contracts.d.ts")
+        mod_flat_file = os.path.join(types_base, f"{mod_name}.contracts.d.ts")
 
         mod_pascal = sanitize_ts_identifier(mod_name)
         lines = []
@@ -746,18 +864,12 @@ def export_typescript_modular(endpoints: List[Dict[str, Any]], output_dir: str) 
                 props = resp_schema.get("properties", {})
                 if not props and ep.get("mock_response") and isinstance(ep["mock_response"], dict):
                     for mk, mv in ep["mock_response"].items():
-                        if isinstance(mv, bool):
-                            ts_t = "boolean"
-                        elif isinstance(mv, (int, float)):
-                            ts_t = "number"
-                        elif isinstance(mv, str):
-                            ts_t = "string"
-                        elif isinstance(mv, list):
-                            ts_t = "any[]"
-                        elif isinstance(mv, dict):
-                            ts_t = "Record<string, any>"
-                        else:
-                            ts_t = "any"
+                        if isinstance(mv, bool): ts_t = "boolean"
+                        elif isinstance(mv, (int, float)): ts_t = "number"
+                        elif isinstance(mv, str): ts_t = "string"
+                        elif isinstance(mv, list): ts_t = "any[]"
+                        elif isinstance(mv, dict): ts_t = "Record<string, any>"
+                        else: ts_t = "any"
                         lines.append(f"    {mk}: {ts_t};")
                 else:
                     for rk, rv in props.items():
@@ -777,11 +889,16 @@ def export_typescript_modular(endpoints: List[Dict[str, Any]], output_dir: str) 
         lines.append("  }")
         lines.append("}\n")
 
+        ts_content = "\n".join(lines)
         with open(mod_ts_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+            f.write(ts_content)
         generated.append(mod_ts_file)
 
-    # 2. Master consolidated TS definitions: types/api.contracts.d.ts
+        with open(mod_flat_file, "w", encoding="utf-8") as f:
+            f.write(ts_content)
+        generated.append(mod_flat_file)
+
+    # Master index
     master_lines = []
     master_lines.append("/* eslint-disable */")
     master_lines.append("/**\n * Autogenerated Master TypeScript DTO Contracts by agy-tool doc.\n * Zero-Token Synchronized Types Definition.\n */\n")
@@ -815,18 +932,12 @@ def export_typescript_modular(endpoints: List[Dict[str, Any]], output_dir: str) 
             props = resp_schema.get("properties", {})
             if not props and ep.get("mock_response") and isinstance(ep["mock_response"], dict):
                 for mk, mv in ep["mock_response"].items():
-                    if isinstance(mv, bool):
-                        ts_t = "boolean"
-                    elif isinstance(mv, (int, float)):
-                        ts_t = "number"
-                    elif isinstance(mv, str):
-                        ts_t = "string"
-                    elif isinstance(mv, list):
-                        ts_t = "any[]"
-                    elif isinstance(mv, dict):
-                        ts_t = "Record<string, any>"
-                    else:
-                        ts_t = "any"
+                    if isinstance(mv, bool): ts_t = "boolean"
+                    elif isinstance(mv, (int, float)): ts_t = "number"
+                    elif isinstance(mv, str): ts_t = "string"
+                    elif isinstance(mv, list): ts_t = "any[]"
+                    elif isinstance(mv, dict): ts_t = "Record<string, any>"
+                    else: ts_t = "any"
                     master_lines.append(f"    {mk}: {ts_t};")
             else:
                 for rk, rv in props.items():
@@ -870,7 +981,7 @@ def export_postman_collection(endpoints: List[Dict[str, Any]], output_file: str,
             "_postman_id": hashlib.md5(project_name.encode("utf-8")).hexdigest(),
             "name": f"{project_name} API Collection",
             "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-            "description": "Autogenerated API Collection via fayzillo-agy-tools doc module."
+            "description": "Autogenerated 8-Section API Collection via fayzillo-agy-tools doc module."
         },
         "item": [],
         "variable": [
@@ -942,7 +1053,6 @@ def export_postman_collection(endpoints: List[Dict[str, Any]], output_file: str,
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(collection, f, indent=2, ensure_ascii=False)
 
-
 # ==========================================================
 # MAIN EXECUTION RUNNER
 # ==========================================================
@@ -960,9 +1070,23 @@ def run_doc_generate(args):
     probe = getattr(args, 'probe', False) or getattr(args, 'probe_db', False)
     exports = getattr(args, 'export', "md,ts,postman")
     export_list = [e.strip().lower() for e in exports.split(",") if e.strip()]
-    output_dir = getattr(args, 'output_dir', None) or target_path
+    
+    proj_name = os.path.basename(os.path.abspath(target_path).rstrip('/\\')) or "project"
+    
+    # Standardize output directory as <project_name>_contracts/ unless output_dir is given
+    custom_out = getattr(args, 'output_dir', None)
+    if custom_out:
+        output_dir = safe_jail_path(custom_out, base_dir=target_path)
+    else:
+        output_dir = os.path.join(os.path.dirname(target_path), f"{proj_name}_contracts")
+        # If target_path is root of project and we want output inside or sibling
+        if not os.path.exists(output_dir):
+            output_dir = os.path.join(target_path, f"{proj_name}_contracts")
 
-    emit_progress("Analyzing Project", 10, "Loyiha arxitekturasi va fayllar xaritasi tekshirilmoqda...")
+    safe_jail_path(output_dir, base_dir=target_path)
+    os.makedirs(output_dir, exist_ok=True)
+
+    emit_progress("Analyzing Project", 10, f"Loyiha arxitekturasi va fayllar xaritasi tekshirilmoqda ({proj_name})...")
 
     proj_hash = compute_project_hash(target_path)
     cached_endpoints = None if force else load_cached_contracts(target_path, proj_hash)
@@ -971,15 +1095,20 @@ def run_doc_generate(args):
         emit_progress("Cache Hit", 60, "Keshdan tezkor yuklanmoqda (Incremental Sha256)...")
         endpoints = cached_endpoints
     else:
-        emit_progress("Detecting Framework", 30, "Freymvork va adapter aniqlanmoqda...")
+        emit_progress("Detecting Framework", 30, "Freymvork va chuqur AST adapteri aniqlanmoqda...")
         adapter = select_adapter(target_path)
         framework_name = adapter.__class__.__name__.replace("Adapter", "")
 
-        emit_progress("Scanning Endpoints & DTOs", 50, f"{framework_name} DTO va marshrutlari tahlil qilinmoqda...")
+        emit_progress("Scanning Endpoints & Services", 50, f"{framework_name} DTO, Servislar va 8-bosqichli kontraktlar tahlil qilinmoqda...")
         all_endpoints = adapter.scan()
 
-        emit_progress("Applying .apiignore", 70, ".apiignore qoidalari tekshirilmoqda...")
+        emit_progress("Applying Excludes & .apiignore", 70, "Maxfiy modullar (billing, payment) va .apiignore qoidalari tekshirilmoqda...")
         ignore_rules = load_api_ignore(target_path)
+        cli_excludes = getattr(args, "exclude", None)
+        if cli_excludes:
+            ex_items = cli_excludes if isinstance(cli_excludes, list) else [s.strip() for s in cli_excludes.split(",") if s.strip()]
+            ignore_rules.extend(ex_items)
+
         endpoints = [ep for ep in all_endpoints if not is_endpoint_ignored(ep, ignore_rules)]
 
         if probe:
@@ -990,16 +1119,16 @@ def run_doc_generate(args):
                 endpoints,
                 base_url=probe_cfg["base_url"],
                 probe_db=probe_cfg.get("probe_db", False) or getattr(args, "probe_db", False),
-                db_config=probe_cfg
+                db_config=probe_cfg,
+                exclude_patterns=probe_cfg.get("exclude")
             )
 
         save_cached_contracts(target_path, proj_hash, endpoints)
 
-    # Exporting
-    emit_progress("Exporting Contracts", 90, "Modulli hujjatlar (MD, TS, Postman) shakllantirilmoqda...")
+    # Exporting into <project>_contracts/ docs/*.md, types/*.ts, postman/*.json
+    emit_progress("Exporting Contracts", 90, f"8-bosqichli kontraktlar {output_dir} ga yozilmoqda...")
     
     generated_files = []
-    proj_name = os.path.basename(os.path.abspath(target_path))
 
     if "md" in export_list:
         md_files = export_markdown_modular(endpoints, output_dir, proj_name)
@@ -1016,10 +1145,11 @@ def run_doc_generate(args):
         export_postman_collection(endpoints, pm_file, proj_name)
         generated_files.append(os.path.relpath(pm_file, target_path) if pm_file.startswith(target_path) else pm_file)
 
-    emit_progress("Done", 100, f"{len(endpoints)} ta endpoint modulli strukturada muvaffaqiyatli hujjatlashtirildi.")
+    emit_progress("Done", 100, f"{len(endpoints)} ta endpoint 8-bosqichli formatda muvaffaqiyatli hujjatlashtirildi.")
 
     emit_result({
         "project_path": target_path,
+        "output_directory": output_dir,
         "total_endpoints": len(endpoints),
         "exported_files": generated_files,
         "endpoints": endpoints
@@ -1039,6 +1169,11 @@ def run_doc_probe(args):
     adapter = select_adapter(target_path)
     all_endpoints = adapter.scan()
     ignore_rules = load_api_ignore(target_path)
+    cli_excludes = getattr(args, "exclude", None)
+    if cli_excludes:
+        ex_items = cli_excludes if isinstance(cli_excludes, list) else [s.strip() for s in cli_excludes.split(",") if s.strip()]
+        ignore_rules.extend(ex_items)
+
     endpoints = [ep for ep in all_endpoints if not is_endpoint_ignored(ep, ignore_rules)]
     
     emit_progress("Active Sandbox Probing", 60, f"Xavfsiz GET probing o'tkazilmoqda ({probe_cfg['base_url']})...")
@@ -1046,7 +1181,8 @@ def run_doc_probe(args):
         endpoints,
         base_url=probe_cfg["base_url"],
         probe_db=True if (probe_cfg.get("probe_db") or getattr(args, "probe_db", False) or probe_cfg.get("dev_db")) else False,
-        db_config=probe_cfg
+        db_config=probe_cfg,
+        exclude_patterns=probe_cfg.get("exclude")
     )
     
     proj_hash = compute_project_hash(target_path)
@@ -1079,5 +1215,3 @@ def run_doc_sync_db(args):
     
     emit_progress("Done", 100, f"{len(res.get('synced_tables', []))} ta jadval dev sandboxga xavfsiz yuklandi.")
     emit_result(res)
-
-

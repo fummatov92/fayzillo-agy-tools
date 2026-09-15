@@ -136,6 +136,7 @@ def build_parser():
     doc_p.add_argument("--probe-url", "--base-url", dest="probe_url", help="Target base URL for probing (e.g. http://127.0.0.1:15801)")
     doc_p.add_argument("--source-db", help="Source DB URL for safe snapshot sync")
     doc_p.add_argument("--safe-tables", help="Comma-separated list of allowed tables for data sync")
+    doc_p.add_argument("--exclude", help="Comma-separated module names or patterns to exclude/ignore (e.g. billing,payme)")
 
     # === MEDIA MODULE ===
     med_p = subparsers.add_parser("media", help="Interoperable Media Intelligence (video, audio, image, archive, text, pipeline)")
